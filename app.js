@@ -55,7 +55,7 @@
             currentInput = val;
             currentFormat = 'drawio';
             convertBtn.disabled = false;
-            showPreview(null);
+            showDrawioPreview(currentInput);
             log('Draw.io XML detected', 'info');
         } else {
             convertBtn.disabled = !currentInput;
@@ -87,7 +87,7 @@
             // Auto-detect format from content
             if (content.includes('<mxGraphModel') || content.includes('<mxfile')) {
                 currentFormat = 'drawio';
-                showPreview(null);
+                showDrawioPreview(currentInput);
                 log(`Loaded Draw.io file: ${file.name} (${(file.size / 1024).toFixed(1)} KB)`, 'info');
             } else {
                 currentFormat = 'svg';
@@ -111,6 +111,93 @@
             }
         } else {
             previewContainer.innerHTML = '<p style="color:#888; padding:2rem;">Draw.io XML loaded (no visual preview)</p>';
+        }
+    }
+
+    function showDrawioPreview(xmlString) {
+        previewSection.style.display = 'block';
+        try {
+            const parser = new DrawioParser(xmlString);
+            const parsed = parser.parse();
+            const vb = parsed.viewBox;
+
+            const esc = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+
+            let svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${vb.x} ${vb.y} ${vb.width} ${vb.height}" style="max-width:100%;height:auto;background:#fff;border-radius:8px;">`;
+
+            // Draw shapes
+            for (const s of parsed.shapes) {
+                const fill = s.style.fill || '#FFFFFF';
+                const stroke = s.style.stroke || '#000000';
+                const sw = s.style.strokeWidth || 1;
+                const dash = s.style.strokeDasharray ? ` stroke-dasharray="${s.style.strokeDasharray}"` : '';
+                const rx = s.style.rx || 0;
+
+                if (s.type === 'ellipse') {
+                    const cx = s.x + s.width / 2;
+                    const cy = s.y + s.height / 2;
+                    svg += `<ellipse cx="${cx}" cy="${cy}" rx="${s.width / 2}" ry="${s.height / 2}" fill="${fill}" stroke="${stroke}" stroke-width="${sw}"${dash}/>`;
+                } else if (s.type === 'polygon' && s.points) {
+                    const pts = s.points.map(p => `${p.x},${p.y}`).join(' ');
+                    svg += `<polygon points="${pts}" fill="${fill}" stroke="${stroke}" stroke-width="${sw}"${dash}/>`;
+                } else if (s.type === 'diamond') {
+                    const pts = [
+                        `${s.x + s.width / 2},${s.y}`,
+                        `${s.x + s.width},${s.y + s.height / 2}`,
+                        `${s.x + s.width / 2},${s.y + s.height}`,
+                        `${s.x},${s.y + s.height / 2}`
+                    ].join(' ');
+                    svg += `<polygon points="${pts}" fill="${fill}" stroke="${stroke}" stroke-width="${sw}"${dash}/>`;
+                } else {
+                    svg += `<rect x="${s.x}" y="${s.y}" width="${s.width}" height="${s.height}" rx="${rx}" fill="${fill}" stroke="${stroke}" stroke-width="${sw}"${dash}/>`;
+                }
+
+                // Draw text label
+                if (s.text) {
+                    const tx = s.x + s.width / 2;
+                    const ty = s.y + s.height / 2;
+                    const fs = (s.textStyle && s.textStyle.fontSize) || 12;
+                    const fc = (s.textStyle && s.textStyle.textColor) || '#000';
+                    const fw = (s.textStyle && s.textStyle.fontWeight) || 'normal';
+                    svg += `<text x="${tx}" y="${ty}" text-anchor="middle" dominant-baseline="central" font-size="${fs}" font-weight="${fw}" fill="${fc}" font-family="sans-serif">${esc(s.text)}</text>`;
+                }
+            }
+
+            // Draw connectors
+            for (const c of parsed.connectors) {
+                if (c.points.length < 2) continue;
+                const stroke = c.style.stroke || '#000';
+                const sw = c.style.strokeWidth || 1;
+                const dash = c.style.strokeDasharray ? ` stroke-dasharray="${c.style.strokeDasharray}"` : '';
+                const d = c.points.map((p, i) => `${i === 0 ? 'M' : 'L'}${p.x},${p.y}`).join(' ');
+                svg += `<path d="${d}" fill="none" stroke="${stroke}" stroke-width="${sw}"${dash}/>`;
+
+                // Draw arrowhead
+                if (c.hasArrow && c.points.length >= 2) {
+                    const last = c.points[c.points.length - 1];
+                    const prev = c.points[c.points.length - 2];
+                    const angle = Math.atan2(last.y - prev.y, last.x - prev.x);
+                    const arrowLen = 10;
+                    const arrowAngle = Math.PI / 6;
+                    const x1 = last.x - arrowLen * Math.cos(angle - arrowAngle);
+                    const y1 = last.y - arrowLen * Math.sin(angle - arrowAngle);
+                    const x2 = last.x - arrowLen * Math.cos(angle + arrowAngle);
+                    const y2 = last.y - arrowLen * Math.sin(angle + arrowAngle);
+                    svg += `<polygon points="${last.x},${last.y} ${x1},${y1} ${x2},${y2}" fill="${stroke}"/>`;
+                }
+            }
+
+            // Draw standalone texts
+            for (const t of parsed.texts) {
+                const fs = (t.style && t.style.fontSize) || 11;
+                const fc = (t.style && t.style.textColor) || '#000';
+                svg += `<text x="${t.x}" y="${t.y}" text-anchor="middle" dominant-baseline="central" font-size="${fs}" fill="${fc}" font-family="sans-serif">${esc(t.text)}</text>`;
+            }
+
+            svg += '</svg>';
+            previewContainer.innerHTML = svg;
+        } catch (e) {
+            previewContainer.innerHTML = `<p style="color:#f88; padding:2rem;">Preview error: ${e.message}</p>`;
         }
     }
 
