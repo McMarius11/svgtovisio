@@ -2,7 +2,7 @@ name: Deploy to GitHub Pages
 
 on:
   push:
-    branches: ["main"]
+    branches: ["claude/svg-to-visio-importer-mfVHM"]
   workflow_dispatch:
 
 permissions:
