@@ -46,6 +46,8 @@ class VsdxBuilder {
         zip.file('visio/pages/_rels/pages.xml.rels', this._pagesRels());
         zip.file('visio/pages/page1.xml', this._page1());
         zip.file('docProps/app.xml', this._appProps());
+        zip.file('docProps/core.xml', this._coreProps());
+        zip.file('visio/windows.xml', this._windows());
 
         const blob = await zip.generateAsync({
             type: 'blob',
@@ -164,6 +166,8 @@ class VsdxBuilder {
   <Override PartName="/visio/pages/pages.xml" ContentType="application/vnd.ms-visio.pages+xml"/>
   <Override PartName="/visio/pages/page1.xml" ContentType="application/vnd.ms-visio.page+xml"/>
   <Override PartName="/docProps/app.xml" ContentType="application/vnd.openxmlformats-officedocument.extended-properties+xml"/>
+  <Override PartName="/docProps/core.xml" ContentType="application/vnd.openxmlformats-package.core-properties+xml"/>
+  <Override PartName="/visio/windows.xml" ContentType="application/vnd.ms-visio.windows+xml"/>
 </Types>`;
     }
 
@@ -172,6 +176,7 @@ class VsdxBuilder {
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
   <Relationship Id="rId1" Type="http://schemas.microsoft.com/visio/2010/relationships/document" Target="visio/document.xml"/>
   <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/extended-properties" Target="docProps/app.xml"/>
+  <Relationship Id="rId3" Type="http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties" Target="docProps/core.xml"/>
 </Relationships>`;
     }
 
@@ -206,7 +211,7 @@ class VsdxBuilder {
       <Cell N="ShdwPattern" V="0"/>
       <Section N="Character">
         <Row IX="0">
-          <Cell N="Font" V="Calibri"/>
+          <Cell N="Font" V="1"/>
           <Cell N="Color" V="#000000"/>
           <Cell N="Size" V="0.1111111111111111"/>
         </Row>
@@ -225,6 +230,7 @@ class VsdxBuilder {
         return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
   <Relationship Id="rId1" Type="http://schemas.microsoft.com/visio/2010/relationships/pages" Target="pages/pages.xml"/>
+  <Relationship Id="rId2" Type="http://schemas.microsoft.com/visio/2010/relationships/windows" Target="windows.xml"/>
 </Relationships>`;
     }
 
@@ -259,6 +265,36 @@ class VsdxBuilder {
   <Application>SVG to Visio Converter</Application>
   <AppVersion>15.00</AppVersion>
 </Properties>`;
+    }
+
+    _coreProps() {
+        const now = new Date().toISOString();
+        return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties"
+                   xmlns:dc="http://purl.org/dc/elements/1.1/"
+                   xmlns:dcterms="http://purl.org/dc/terms/"
+                   xmlns:dcmitype="http://purl.org/dc/dcmitype/"
+                   xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+  <dc:creator>SVG to Visio Converter</dc:creator>
+  <dcterms:created xsi:type="dcterms:W3CDTF">${now}</dcterms:created>
+  <dcterms:modified xsi:type="dcterms:W3CDTF">${now}</dcterms:modified>
+</cp:coreProperties>`;
+    }
+
+    _windows() {
+        return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Windows xmlns="http://schemas.microsoft.com/office/visio/2012/main"
+         xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <Window ID="0" WindowType="Drawing" WindowState="1073741824"
+          WindowLeft="-1" WindowTop="-1" WindowWidth="1024" WindowHeight="768"
+          Page="0">
+    <ShowGrid>0</ShowGrid>
+    <ShowGuides>0</ShowGuides>
+    <ShowConnectionPoints>0</ShowConnectionPoints>
+    <ShowPageBreaks>0</ShowPageBreaks>
+    <TabSplitterPos>0.5</TabSplitterPos>
+  </Window>
+</Windows>`;
     }
 
     _page1() {
@@ -317,7 +353,8 @@ class VsdxBuilder {
 
         return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <PageContents xmlns="http://schemas.microsoft.com/office/visio/2012/main"
-              xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+              xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+              xml:space="preserve">
   <Shapes>
 ${shapesXml}
   </Shapes>${connectsXml}
@@ -409,7 +446,7 @@ ${shapesXml}
             sectionsXml += `
       <Section N="Character">
         <Row IX="0">
-          <Cell N="Font" V="Calibri"/>
+          <Cell N="Font" V="1"/>
           <Cell N="Color" V="${textColor || '#000000'}"/>
           <Cell N="Size" V="${fontSize}"/>
           <Cell N="Style" V="${isBold ? '1' : '0'}"/>
@@ -551,7 +588,7 @@ ${cellsXml}${sectionsXml}${textXml}
       <Cell N="LinePattern" V="0"/>
       <Section N="Character">
         <Row IX="0">
-          <Cell N="Font" V="Calibri"/>
+          <Cell N="Font" V="1"/>
           <Cell N="Color" V="${textColor}"/>
           <Cell N="Size" V="${fontSizeInches}"/>
           <Cell N="Style" V="${isBold ? '1' : '0'}"/>
