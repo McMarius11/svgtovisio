@@ -64,4 +64,6 @@ The converter runs entirely in the browser — no server needed.
 
 ## License
 
-[MIT](LICENSE)
+[MIT](LICENSE) — Third-party licenses: [THIRD-PARTY-LICENSES](THIRD-PARTY-LICENSES)
+
+Uses [JSZip](https://stuk.github.io/jszip/) (MIT) and [pako](https://github.com/nodeca/pako) (MIT/Zlib).
