@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>SVG to Visio Converter</title>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pako/2.1.0/pako.min.js"></script>
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; }
         body {
@@ -153,20 +154,20 @@
 </head>
 <body>
     <header>
-        <h1>SVG to Visio Converter</h1>
-        <p>Convert Claude-generated SVG diagrams to editable Visio (.vsdx) files</p>
+        <h1>SVG &amp; Draw.io to Visio Converter</h1>
+        <p>Convert SVG diagrams and Draw.io files to editable Visio (.vsdx) files</p>
     </header>
 
     <div class="container">
         <div class="drop-zone" id="dropZone">
             <div class="icon">&#128196;</div>
-            <p>Drag &amp; drop an SVG file here</p>
+            <p>Drag &amp; drop an SVG or .drawio file here</p>
             <p class="browse" id="browseBtn">or click to browse</p>
         </div>
 
-        <div class="or-divider">- or paste SVG code below -</div>
+        <div class="or-divider">- or paste SVG / Draw.io XML code below -</div>
 
-        <textarea class="paste-area" id="svgInput" placeholder="Paste your SVG code here...&#10;&#10;Example: <svg xmlns=&quot;http://www.w3.org/2000/svg&quot; viewBox=&quot;0 0 800 600&quot;>...</svg>"></textarea>
+        <textarea class="paste-area" id="svgInput" placeholder="Paste your SVG or Draw.io XML here...&#10;&#10;SVG: <svg xmlns=&quot;...&quot; viewBox=&quot;0 0 800 600&quot;>...</svg>&#10;Draw.io: <mxfile>...<mxGraphModel>...</mxGraphModel>...</mxfile>"></textarea>
 
         <div class="actions">
             <button class="btn btn-primary" id="convertBtn" disabled>Convert to .vsdx</button>
@@ -182,9 +183,10 @@
         </div>
     </div>
 
-    <input type="file" id="fileInput" accept=".svg,image/svg+xml">
+    <input type="file" id="fileInput" accept=".svg,.drawio,.xml,image/svg+xml">
 
     <script src="svg-parser.js"></script>
+    <script src="drawio-parser.js"></script>
     <script src="vsdx-builder.js"></script>
     <script src="app.js"></script>
 </body>

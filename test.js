@@ -10,9 +10,12 @@ const { JSDOM } = require('jsdom');
 const dom = new JSDOM('<!DOCTYPE html><html><body></body></html>');
 global.DOMParser = dom.window.DOMParser;
 
-// Load the parser
+// Load the parsers
 const parserCode = fs.readFileSync('./svg-parser.js', 'utf8');
 const SvgParser = new Function(parserCode + '\nreturn SvgParser;')();
+
+const drawioParserCode = fs.readFileSync('./drawio-parser.js', 'utf8');
+const DrawioParser = new Function(drawioParserCode + '\nreturn DrawioParser;')();
 
 let passed = 0;
 let failed = 0;
@@ -86,6 +89,62 @@ const parser4 = new SvgParser(pathSvg);
 const result4 = parser4.parse();
 assert(result4.shapes.length === 2, `Path SVG: should have 2 shapes (got ${result4.shapes.length})`);
 assert(result4.connectors.length === 1, `Path SVG: should have 1 connector (got ${result4.connectors.length})`);
+
+// Test 4: Draw.io flowchart
+console.log('\n--- Test 4: Draw.io Flowchart ---');
+const drawioXml = fs.readFileSync('./test-samples/flowchart.drawio', 'utf8');
+const drawioParser = new DrawioParser(drawioXml);
+const drawioResult = drawioParser.parse();
+const drawioStats = drawioParser.getStats();
+
+assert(drawioStats.shapes >= 6, `Should have at least 6 shapes (got ${drawioStats.shapes})`);
+assert(drawioStats.connectors >= 5, `Should have at least 5 connectors (got ${drawioStats.connectors})`);
+
+// Check shape types
+const drawioTypes = drawioResult.shapes.map(s => s.type);
+assert(drawioTypes.includes('ellipse'), 'Should have ellipse shapes (Start/End)');
+assert(drawioTypes.includes('rect'), 'Should have rect shapes (process boxes)');
+assert(drawioTypes.includes('diamond'), 'Should have diamond shape (decision)');
+
+// Check text extraction
+const drawioShapesWithText = drawioResult.shapes.filter(s => s.text);
+assert(drawioShapesWithText.length >= 6, `All 6 shapes should have text (got ${drawioShapesWithText.length})`);
+
+// Check connector linking
+const drawioLinked = drawioResult.connectors.filter(c => c.fromShape !== null && c.toShape !== null);
+assert(drawioLinked.length >= 5, `At least 5 connectors should be linked (got ${drawioLinked.length})`);
+
+// Check arrows
+const drawioArrows = drawioResult.connectors.filter(c => c.hasArrow);
+assert(drawioArrows.length >= 5, `At least 5 connectors should have arrows (got ${drawioArrows.length})`);
+
+// Check edge labels become texts
+const edgeLabels = drawioResult.texts.filter(t => t.text === 'Yes' || t.text === 'No');
+assert(edgeLabels.length === 2, `Should have 2 edge labels (got ${edgeLabels.length})`);
+
+// Test 5: Draw.io raw mxGraphModel (without mxfile wrapper)
+console.log('\n--- Test 5: Draw.io raw mxGraphModel ---');
+const rawDrawio = `<mxGraphModel>
+  <root>
+    <mxCell id="0"/>
+    <mxCell id="1" parent="0"/>
+    <mxCell id="2" value="Box A" style="rounded=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="1">
+      <mxGeometry x="50" y="50" width="120" height="60" as="geometry"/>
+    </mxCell>
+    <mxCell id="3" value="Box B" style="fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1">
+      <mxGeometry x="250" y="50" width="120" height="60" as="geometry"/>
+    </mxCell>
+    <mxCell id="4" style="endArrow=classic;" edge="1" source="2" target="3" parent="1">
+      <mxGeometry relative="1" as="geometry"/>
+    </mxCell>
+  </root>
+</mxGraphModel>`;
+const rawParser = new DrawioParser(rawDrawio);
+const rawResult = rawParser.parse();
+assert(rawResult.shapes.length === 2, `Should have 2 shapes (got ${rawResult.shapes.length})`);
+assert(rawResult.connectors.length === 1, `Should have 1 connector (got ${rawResult.connectors.length})`);
+assert(rawResult.shapes[0].style.rx > 0, 'First shape should be rounded');
+assert(rawResult.connectors[0].hasArrow, 'Connector should have arrow');
 
 // Summary
 console.log(`\n=== Results: ${passed} passed, ${failed} failed ===`);
