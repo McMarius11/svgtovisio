@@ -146,6 +146,29 @@ assert(rawResult.connectors.length === 1, `Should have 1 connector (got ${rawRes
 assert(rawResult.shapes[0].style.rx > 0, 'First shape should be rounded');
 assert(rawResult.connectors[0].hasArrow, 'Connector should have arrow');
 
+// Test 6: Real-world Draw.io (Köln BGP network diagram)
+console.log('\n--- Test 6: Real-world Draw.io (BGP network) ---');
+const bgpXml = fs.readFileSync('./test-samples/koeln-bgp.drawio', 'utf8');
+const bgpParser = new DrawioParser(bgpXml);
+const bgpResult = bgpParser.parse();
+const bgpStats = bgpParser.getStats();
+
+assert(bgpStats.shapes === 12, `Should have 12 shapes (got ${bgpStats.shapes})`);
+assert(bgpStats.connectors === 10, `Should have 10 connectors (got ${bgpStats.connectors})`);
+assert(bgpStats.texts === 2, `Should have 2 edge labels (got ${bgpStats.texts})`);
+
+// Check &#xa; newline decoding in labels
+const koelnShape = bgpResult.shapes.find(s => s.text && s.text.includes('Köln'));
+assert(koelnShape && koelnShape.text.includes('\n'), 'Should decode &#xa; as newline in labels');
+
+// Check all connectors are linked
+const allLinked = bgpResult.connectors.every(c => c.fromShape !== null && c.toShape !== null);
+assert(allLinked, 'All connectors should be linked to shapes');
+
+// Check waypoints parsed for HA connectors
+const haConn = bgpResult.connectors.find(c => c.points.length > 2);
+assert(haConn && haConn.points.length === 4, `HA connector should have 4 points (got ${haConn ? haConn.points.length : 0})`);
+
 // Summary
 console.log(`\n=== Results: ${passed} passed, ${failed} failed ===`);
 process.exit(failed > 0 ? 1 : 0);
