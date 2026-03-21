@@ -1119,7 +1119,8 @@ class DrawioParser {
                 rx: rounded ? Math.min(w, h) * 0.1 : 0
             },
             text: text || null,
-            textStyle: null
+            textStyle: null,
+            verticalAlign: style['verticalAlign'] || 'middle'
         };
 
         if (text) {
@@ -2136,6 +2137,26 @@ ${cellsXml}${sectionsXml}${textXml}
 
             const esc = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 
+            // Render multi-line text as tspan elements
+            function renderText(x, y, text, fontSize, fontColor, fontWeight, anchor, baseline) {
+                const lines = text.split('\n');
+                if (lines.length === 1) {
+                    return `<text x="${x}" y="${y}" text-anchor="${anchor}" dominant-baseline="${baseline}" font-size="${fontSize}" font-weight="${fontWeight}" fill="${fontColor}" font-family="sans-serif">${esc(text)}</text>`;
+                }
+                // Multi-line: offset first line so block is vertically centered
+                const lineHeight = fontSize * 1.25;
+                let startY = y;
+                if (baseline === 'central' || baseline === 'middle') {
+                    startY = y - ((lines.length - 1) * lineHeight) / 2;
+                }
+                let out = `<text x="${x}" text-anchor="${anchor}" font-size="${fontSize}" font-weight="${fontWeight}" fill="${fontColor}" font-family="sans-serif">`;
+                for (let i = 0; i < lines.length; i++) {
+                    out += `<tspan x="${x}" dy="${i === 0 ? 0 : lineHeight}" y="${i === 0 ? startY : ''}">${esc(lines[i])}</tspan>`;
+                }
+                out += '</text>';
+                return out;
+            }
+
             let svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${vb.x} ${vb.y} ${vb.width} ${vb.height}" style="max-width:100%;height:auto;background:#fff;border-radius:8px;">`;
 
             // Draw shapes
@@ -2145,14 +2166,16 @@ ${cellsXml}${sectionsXml}${textXml}
                 const sw = s.style.strokeWidth || 1;
                 const dash = s.style.strokeDasharray ? ` stroke-dasharray="${s.style.strokeDasharray}"` : '';
                 const rx = s.style.rx || 0;
+                const opacity = s.style.opacity != null ? s.style.opacity : 1;
+                const opAttr = opacity < 1 ? ` opacity="${opacity}"` : '';
 
                 if (s.type === 'ellipse') {
                     const cx = s.x + s.width / 2;
                     const cy = s.y + s.height / 2;
-                    svg += `<ellipse cx="${cx}" cy="${cy}" rx="${s.width / 2}" ry="${s.height / 2}" fill="${fill}" stroke="${stroke}" stroke-width="${sw}"${dash}/>`;
+                    svg += `<ellipse cx="${cx}" cy="${cy}" rx="${s.width / 2}" ry="${s.height / 2}" fill="${fill}" stroke="${stroke}" stroke-width="${sw}"${dash}${opAttr}/>`;
                 } else if (s.type === 'polygon' && s.points) {
                     const pts = s.points.map(p => `${p.x},${p.y}`).join(' ');
-                    svg += `<polygon points="${pts}" fill="${fill}" stroke="${stroke}" stroke-width="${sw}"${dash}/>`;
+                    svg += `<polygon points="${pts}" fill="${fill}" stroke="${stroke}" stroke-width="${sw}"${dash}${opAttr}/>`;
                 } else if (s.type === 'diamond') {
                     const pts = [
                         `${s.x + s.width / 2},${s.y}`,
@@ -2160,19 +2183,28 @@ ${cellsXml}${sectionsXml}${textXml}
                         `${s.x + s.width / 2},${s.y + s.height}`,
                         `${s.x},${s.y + s.height / 2}`
                     ].join(' ');
-                    svg += `<polygon points="${pts}" fill="${fill}" stroke="${stroke}" stroke-width="${sw}"${dash}/>`;
+                    svg += `<polygon points="${pts}" fill="${fill}" stroke="${stroke}" stroke-width="${sw}"${dash}${opAttr}/>`;
                 } else {
-                    svg += `<rect x="${s.x}" y="${s.y}" width="${s.width}" height="${s.height}" rx="${rx}" fill="${fill}" stroke="${stroke}" stroke-width="${sw}"${dash}/>`;
+                    svg += `<rect x="${s.x}" y="${s.y}" width="${s.width}" height="${s.height}" rx="${rx}" fill="${fill}" stroke="${stroke}" stroke-width="${sw}"${dash}${opAttr}/>`;
                 }
 
                 // Draw text label
                 if (s.text) {
-                    const tx = s.x + s.width / 2;
-                    const ty = s.y + s.height / 2;
                     const fs = (s.textStyle && s.textStyle.fontSize) || 12;
                     const fc = (s.textStyle && s.textStyle.textColor) || '#000';
                     const fw = (s.textStyle && s.textStyle.fontWeight) || 'normal';
-                    svg += `<text x="${tx}" y="${ty}" text-anchor="middle" dominant-baseline="central" font-size="${fs}" font-weight="${fw}" fill="${fc}" font-family="sans-serif">${esc(s.text)}</text>`;
+                    const vAlign = s.verticalAlign || 'middle';
+
+                    let tx = s.x + s.width / 2;
+                    let ty, baseline;
+                    if (vAlign === 'top') {
+                        ty = s.y + fs + 4;
+                        baseline = 'auto';
+                    } else {
+                        ty = s.y + s.height / 2;
+                        baseline = 'central';
+                    }
+                    svg += renderText(tx, ty, s.text, fs, fc, fw, 'middle', baseline);
                 }
             }
 
@@ -2204,7 +2236,7 @@ ${cellsXml}${sectionsXml}${textXml}
             for (const t of parsed.texts) {
                 const fs = (t.style && t.style.fontSize) || 11;
                 const fc = (t.style && t.style.textColor) || '#000';
-                svg += `<text x="${t.x}" y="${t.y}" text-anchor="middle" dominant-baseline="central" font-size="${fs}" fill="${fc}" font-family="sans-serif">${esc(t.text)}</text>`;
+                svg += renderText(t.x, t.y, t.text, fs, fc, 'normal', 'middle', 'central');
             }
 
             svg += '</svg>';

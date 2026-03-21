@@ -186,7 +186,8 @@ class DrawioParser {
                 rx: rounded ? Math.min(w, h) * 0.1 : 0
             },
             text: text || null,
-            textStyle: null
+            textStyle: null,
+            verticalAlign: style['verticalAlign'] || 'middle'
         };
 
         if (text) {
