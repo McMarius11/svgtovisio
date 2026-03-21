@@ -24,10 +24,17 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Prepare site
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Build standalone site
         run: |
+          npm install
+          node build.js
           mkdir _site
-          cp index.html app.js svg-parser.js vsdx-builder.js _site/
+          cp dist/index.html _site/index.html
           touch _site/.nojekyll
 
       - name: Setup Pages
