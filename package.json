@@ -20,6 +20,8 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
-    "jsdom": "^29.0.1"
+    "jsdom": "^29.0.1",
+    "jszip": "^3.10.1",
+    "pako": "^2.1.0"
   }
 }

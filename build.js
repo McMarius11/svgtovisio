@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 /**
- * Build script - inlines all JS files into index.html for standalone deployment.
- * This avoids file:// and CORS issues when opening the HTML directly.
+ * Build script - inlines ALL JS (including CDN libs) into index.html.
+ * Produces a fully self-contained single HTML file with zero external dependencies.
  *
  * Usage: node build.js
- * Output: dist/index.html (self-contained single file)
+ * Output: dist/index.html
  */
 
 const fs = require('fs');
@@ -17,23 +17,41 @@ if (!fs.existsSync(distDir)) {
     fs.mkdirSync(distDir);
 }
 
+// Map CDN URLs to local node_modules files
+const cdnMap = {
+    'https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js':
+        path.join(srcDir, 'node_modules/jszip/dist/jszip.min.js'),
+    'https://cdnjs.cloudflare.com/ajax/libs/pako/2.1.0/pako.min.js':
+        path.join(srcDir, 'node_modules/pako/dist/pako.min.js'),
+};
+
 let html = fs.readFileSync(path.join(srcDir, 'index.html'), 'utf8');
 
-// Inline each local script src
-const scriptRegex = /<script src="([^"]+\.js)"><\/script>/g;
+// Inline ALL script src tags (CDN + local)
+const scriptRegex = /<script src="([^"]+)">\s*<\/script>/g;
 html = html.replace(scriptRegex, (match, src) => {
-    // Skip CDN scripts
-    if (src.startsWith('http')) return match;
+    let filePath;
 
-    const filePath = path.join(srcDir, src);
-    if (!fs.existsSync(filePath)) {
-        console.error(`WARNING: ${src} not found, keeping external reference`);
-        return match;
+    if (src.startsWith('http')) {
+        // CDN script — resolve to local copy
+        filePath = cdnMap[src];
+        if (!filePath || !fs.existsSync(filePath)) {
+            console.error(`WARNING: No local copy for CDN ${src}, keeping external ref`);
+            return match;
+        }
+    } else {
+        // Local script
+        filePath = path.join(srcDir, src);
+        if (!fs.existsSync(filePath)) {
+            console.error(`WARNING: ${src} not found`);
+            return match;
+        }
     }
 
     const code = fs.readFileSync(filePath, 'utf8');
-    console.log(`Inlined: ${src} (${(code.length / 1024).toFixed(1)} KB)`);
-    return `<script>/* ${src} */\n${code}\n</script>`;
+    const name = path.basename(filePath);
+    console.log(`Inlined: ${name} (${(code.length / 1024).toFixed(1)} KB)`);
+    return `<script>/* ${name} */\n${code}\n</script>`;
 });
 
 fs.writeFileSync(path.join(distDir, 'index.html'), html);
