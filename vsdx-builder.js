@@ -11,6 +11,9 @@
  *
  * Coordinates: Visio uses inches with origin at bottom-left.
  * SVG uses pixels with origin at top-left.
+ *
+ * Uses the official Cell N="..." V="..." attribute format per MS-VSDX spec.
+ * Connectors use <Connects> elements to glue to source/target shapes.
  */
 
 class VsdxBuilder {
@@ -25,6 +28,10 @@ class VsdxBuilder {
         if (this.pageHeightInches < 1) this.pageHeightInches = 11;
 
         this.scale = 1 / 96; // px to inches
+
+        // Track shape IDs for connector gluing
+        this.shapeIds = []; // index = data.shapes index, value = Visio shape ID
+        this.connectorLinks = []; // { connectorId, fromShapeId, toShapeId }
     }
 
     async build() {
@@ -173,10 +180,6 @@ class VsdxBuilder {
 <VisioDocument xmlns="http://schemas.microsoft.com/office/visio/2012/main"
                xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"
                xml:space="preserve">
-  <DocumentProperties>
-    <Creator>SVG to Visio Converter</Creator>
-    <Description>Converted from SVG</Description>
-  </DocumentProperties>
   <DocumentSettings TopPage="0" DefaultTextStyle="0" DefaultLineStyle="0" DefaultFillStyle="0">
     <GlueSettings>9</GlueSettings>
     <SnapSettings>65847</SnapSettings>
@@ -188,36 +191,31 @@ class VsdxBuilder {
   </FaceNames>
   <StyleSheets>
     <StyleSheet ID="0" Name="No Style" NameU="No Style">
-      <Line>
-        <LineWeight>0.01041666666666667</LineWeight>
-        <LineColor>0</LineColor>
-        <LinePattern>1</LinePattern>
-        <LineCap>0</LineCap>
-        <BeginArrow>0</BeginArrow>
-        <EndArrow>0</EndArrow>
-        <BeginArrowSize>2</BeginArrowSize>
-        <EndArrowSize>2</EndArrowSize>
-      </Line>
-      <Fill>
-        <FillForegnd>#FFFFFF</FillForegnd>
-        <FillBkgnd>#000000</FillBkgnd>
-        <FillPattern>1</FillPattern>
-        <ShdwForegnd>#D8D8D8</ShdwForegnd>
-        <ShdwPattern>0</ShdwPattern>
-      </Fill>
-      <Text>
-        <Font ID="1"/>
-        <Color>#000000</Color>
-        <Size>0.1111111111111111</Size>
-      </Text>
-      <Char IX="0">
-        <Font>1</Font>
-        <Color>#000000</Color>
-        <Size>0.1111111111111111</Size>
-      </Char>
-      <Para IX="0">
-        <HorzAlign>1</HorzAlign>
-      </Para>
+      <Cell N="LineWeight" V="0.01041666666666667"/>
+      <Cell N="LineColor" V="#000000"/>
+      <Cell N="LinePattern" V="1"/>
+      <Cell N="LineCap" V="0"/>
+      <Cell N="BeginArrow" V="0"/>
+      <Cell N="EndArrow" V="0"/>
+      <Cell N="BeginArrowSize" V="2"/>
+      <Cell N="EndArrowSize" V="2"/>
+      <Cell N="FillForegnd" V="#FFFFFF"/>
+      <Cell N="FillBkgnd" V="#000000"/>
+      <Cell N="FillPattern" V="1"/>
+      <Cell N="ShdwForegnd" V="#D8D8D8"/>
+      <Cell N="ShdwPattern" V="0"/>
+      <Section N="Character">
+        <Row IX="0">
+          <Cell N="Font" V="Calibri"/>
+          <Cell N="Color" V="#000000"/>
+          <Cell N="Size" V="0.1111111111111111"/>
+        </Row>
+      </Section>
+      <Section N="Paragraph">
+        <Row IX="0">
+          <Cell N="HorzAlign" V="1"/>
+        </Row>
+      </Section>
     </StyleSheet>
   </StyleSheets>
 </VisioDocument>`;
@@ -236,14 +234,12 @@ class VsdxBuilder {
        xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
   <Page ID="0" Name="Page-1" NameU="Page-1">
     <PageSheet>
-      <PageProps>
-        <PageWidth>${this.pageWidthInches}</PageWidth>
-        <PageHeight>${this.pageHeightInches}</PageHeight>
-        <PageScale>1</PageScale>
-        <DrawingScale>1</DrawingScale>
-        <DrawingSizeType>1</DrawingSizeType>
-        <DrawingScaleType>0</DrawingScaleType>
-      </PageProps>
+      <Cell N="PageWidth" V="${this.pageWidthInches}"/>
+      <Cell N="PageHeight" V="${this.pageHeightInches}"/>
+      <Cell N="PageScale" V="1"/>
+      <Cell N="DrawingScale" V="1"/>
+      <Cell N="DrawingSizeType" V="1"/>
+      <Cell N="DrawingScaleType" V="0"/>
     </PageSheet>
     <Rel r:id="rId1"/>
   </Page>
@@ -267,10 +263,15 @@ class VsdxBuilder {
 
     _page1() {
         let shapesXml = '';
+        this.shapeIds = [];
+        this.connectorLinks = [];
 
-        // Render shapes
-        for (const shape of this.data.shapes) {
-            shapesXml += this._buildShape(shape);
+        // Render shapes first (so we have their IDs for connectors)
+        for (let i = 0; i < this.data.shapes.length; i++) {
+            const shape = this.data.shapes[i];
+            const id = this._nextId();
+            this.shapeIds[i] = id;
+            shapesXml += this._buildShape(shape, id);
         }
 
         // Render standalone texts
@@ -280,7 +281,38 @@ class VsdxBuilder {
 
         // Render connectors
         for (const conn of this.data.connectors) {
-            shapesXml += this._buildConnector(conn);
+            const id = this._nextId();
+            shapesXml += this._buildConnector(conn, id);
+
+            // Track connections for <Connects> section
+            if (conn.fromShape !== null) {
+                this.connectorLinks.push({
+                    connectorId: id,
+                    cell: 'BeginX',
+                    fromPart: 9,
+                    targetId: this.shapeIds[conn.fromShape],
+                    toPart: 3
+                });
+            }
+            if (conn.toShape !== null) {
+                this.connectorLinks.push({
+                    connectorId: id,
+                    cell: 'EndX',
+                    fromPart: 12,
+                    targetId: this.shapeIds[conn.toShape],
+                    toPart: 3
+                });
+            }
+        }
+
+        // Build <Connects> section
+        let connectsXml = '';
+        if (this.connectorLinks.length > 0) {
+            connectsXml = '\n  <Connects>';
+            for (const link of this.connectorLinks) {
+                connectsXml += `\n    <Connect FromSheet="${link.connectorId}" FromCell="${link.cell}" FromPart="${link.fromPart}" ToSheet="${link.targetId}" ToCell="PinX" ToPart="${link.toPart}"/>`;
+            }
+            connectsXml += '\n  </Connects>';
         }
 
         return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
@@ -288,13 +320,11 @@ class VsdxBuilder {
               xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
   <Shapes>
 ${shapesXml}
-  </Shapes>
+  </Shapes>${connectsXml}
 </PageContents>`;
     }
 
-    _buildShape(shape) {
-        const id = this._nextId();
-
+    _buildShape(shape, id) {
         // Center position in Visio coordinates (inches, bottom-left origin)
         const w = shape.width * this.scale;
         const h = shape.height * this.scale;
@@ -305,154 +335,156 @@ ${shapesXml}
         const lineColor = this._colorToRGB(shape.style.stroke);
         const lineWeight = (shape.style.strokeWidth || 1) * this.scale;
 
-        let geomSection = '';
-        let fillSection = '';
-        let lineSection = '';
-        let textSection = '';
-        let charSection = '';
+        let cellsXml = '';
+        let sectionsXml = '';
+        let textXml = '';
 
-        // Fill
+        // XForm cells
+        cellsXml += `      <Cell N="PinX" V="${pinX}"/>
+      <Cell N="PinY" V="${pinY}"/>
+      <Cell N="Width" V="${w}"/>
+      <Cell N="Height" V="${h}"/>
+      <Cell N="LocPinX" V="${w / 2}"/>
+      <Cell N="LocPinY" V="${h / 2}"/>
+      <Cell N="Angle" V="0"/>
+`;
+
+        // Fill cells
         if (fillColor && shape.style.fill !== 'none') {
-            fillSection = `
-      <Fill>
-        <FillForegnd>${fillColor}</FillForegnd>
-        <FillPattern>1</FillPattern>
-        <FillForegndTrans>${1 - (shape.style.fillOpacity || 1) * (shape.style.opacity || 1)}</FillForegndTrans>
-      </Fill>`;
+            const trans = 1 - (shape.style.fillOpacity || 1) * (shape.style.opacity || 1);
+            cellsXml += `      <Cell N="FillForegnd" V="${fillColor}"/>
+      <Cell N="FillPattern" V="1"/>
+      <Cell N="FillForegndTrans" V="${trans}"/>
+`;
         } else {
-            fillSection = `
-      <Fill>
-        <FillPattern>0</FillPattern>
-      </Fill>`;
+            cellsXml += `      <Cell N="FillPattern" V="0"/>
+`;
         }
 
-        // Line
+        // Line cells
         if (lineColor && shape.style.stroke !== 'none') {
             const dashPattern = shape.style.strokeDasharray ? '2' : '1';
-            lineSection = `
-      <Line>
-        <LineWeight>${lineWeight}</LineWeight>
-        <LineColor>${lineColor}</LineColor>
-        <LinePattern>${dashPattern}</LinePattern>
-      </Line>`;
+            cellsXml += `      <Cell N="LineWeight" V="${lineWeight}"/>
+      <Cell N="LineColor" V="${lineColor}"/>
+      <Cell N="LinePattern" V="${dashPattern}"/>
+`;
         } else {
-            lineSection = `
-      <Line>
-        <LinePattern>0</LinePattern>
-      </Line>`;
+            cellsXml += `      <Cell N="LinePattern" V="0"/>
+`;
         }
 
-        // Geometry based on shape type
+        // Rounding for rects
+        if (shape.type === 'rect' && shape.style.rx > 0) {
+            cellsXml += `      <Cell N="Rounding" V="${shape.style.rx * this.scale}"/>
+`;
+        }
+
+        // Geometry section
         switch (shape.type) {
             case 'rect':
-                geomSection = this._rectGeom(w, h, shape.style.rx * this.scale);
+                sectionsXml += this._rectGeom(w, h, shape.style.rx * this.scale);
                 break;
             case 'circle':
             case 'ellipse':
-                geomSection = this._ellipseGeom(w, h);
+                sectionsXml += this._ellipseGeom(w, h);
                 break;
             case 'diamond':
-                geomSection = this._diamondGeom(w, h);
+                sectionsXml += this._diamondGeom(w, h);
                 break;
             case 'polygon':
             case 'path-shape':
-                geomSection = this._polygonGeom(shape, w, h);
+                sectionsXml += this._polygonGeom(shape, w, h);
                 break;
             default:
-                geomSection = this._rectGeom(w, h, 0);
+                sectionsXml += this._rectGeom(w, h, 0);
         }
 
-        // Text
+        // Text + character formatting
         if (shape.text) {
             const textColor = (shape.textStyle && shape.textStyle.textColor) ?
                 this._colorToRGB(shape.textStyle.textColor) : '#000000';
-            const fontSize = ((shape.textStyle && shape.textStyle.fontSize) || 14) / 72; // pt to inches
-            const fontWeight = (shape.textStyle && shape.textStyle.fontWeight === 'bold') ? '1' : '0';
+            const fontSize = ((shape.textStyle && shape.textStyle.fontSize) || 14) / 72;
+            const isBold = (shape.textStyle && shape.textStyle.fontWeight === 'bold');
 
-            charSection = `
-      <Char IX="0">
-        <Font>1</Font>
-        <Color>${textColor || '#000000'}</Color>
-        <Size>${fontSize}</Size>
-        <Style>${fontWeight === '1' ? '1' : '0'}</Style>
-      </Char>
-      <Para IX="0">
-        <HorzAlign>1</HorzAlign>
-      </Para>`;
+            sectionsXml += `
+      <Section N="Character">
+        <Row IX="0">
+          <Cell N="Font" V="Calibri"/>
+          <Cell N="Color" V="${textColor || '#000000'}"/>
+          <Cell N="Size" V="${fontSize}"/>
+          <Cell N="Style" V="${isBold ? '1' : '0'}"/>
+        </Row>
+      </Section>
+      <Section N="Paragraph">
+        <Row IX="0">
+          <Cell N="HorzAlign" V="1"/>
+        </Row>
+      </Section>`;
 
-            textSection = `
+            textXml = `
       <Text>${this._xmlEscape(shape.text)}</Text>`;
         }
 
         return `    <Shape ID="${id}" Type="Shape" LineStyle="0" FillStyle="0" TextStyle="0">
-      <XForm>
-        <PinX>${pinX}</PinX>
-        <PinY>${pinY}</PinY>
-        <Width>${w}</Width>
-        <Height>${h}</Height>
-        <LocPinX>${w / 2}</LocPinX>
-        <LocPinY>${h / 2}</LocPinY>
-        <Angle>0</Angle>
-      </XForm>${fillSection}${lineSection}${charSection}${geomSection}${textSection}
+${cellsXml}${sectionsXml}${textXml}
     </Shape>
 `;
     }
 
     _rectGeom(w, h, rx) {
         if (rx > 0) {
-            // Rounded rectangle
             return `
-      <Geom IX="0">
-        <NoFill>0</NoFill>
-        <NoLine>0</NoLine>
-        <MoveTo IX="1"><X>0</X><Y>${rx}</Y></MoveTo>
-        <ArcTo IX="2"><X>${rx}</X><Y>0</Y><A>${rx * 0.4142}</A></ArcTo>
-        <LineTo IX="3"><X>${w - rx}</X><Y>0</Y></LineTo>
-        <ArcTo IX="4"><X>${w}</X><Y>${rx}</Y><A>${rx * 0.4142}</A></ArcTo>
-        <LineTo IX="5"><X>${w}</X><Y>${h - rx}</Y></LineTo>
-        <ArcTo IX="6"><X>${w - rx}</X><Y>${h}</Y><A>${rx * 0.4142}</A></ArcTo>
-        <LineTo IX="7"><X>${rx}</X><Y>${h}</Y></LineTo>
-        <ArcTo IX="8"><X>0</X><Y>${h - rx}</Y><A>${rx * 0.4142}</A></ArcTo>
-        <LineTo IX="9"><X>0</X><Y>${rx}</Y></LineTo>
-      </Geom>`;
+      <Section N="Geometry" IX="0">
+        <Cell N="NoFill" V="0"/>
+        <Cell N="NoLine" V="0"/>
+        <Row T="MoveTo" IX="1"><Cell N="X" V="0"/><Cell N="Y" V="${rx}"/></Row>
+        <Row T="ArcTo" IX="2"><Cell N="X" V="${rx}"/><Cell N="Y" V="0"/><Cell N="A" V="${rx * 0.4142}"/></Row>
+        <Row T="LineTo" IX="3"><Cell N="X" V="${w - rx}"/><Cell N="Y" V="0"/></Row>
+        <Row T="ArcTo" IX="4"><Cell N="X" V="${w}"/><Cell N="Y" V="${rx}"/><Cell N="A" V="${rx * 0.4142}"/></Row>
+        <Row T="LineTo" IX="5"><Cell N="X" V="${w}"/><Cell N="Y" V="${h - rx}"/></Row>
+        <Row T="ArcTo" IX="6"><Cell N="X" V="${w - rx}"/><Cell N="Y" V="${h}"/><Cell N="A" V="${rx * 0.4142}"/></Row>
+        <Row T="LineTo" IX="7"><Cell N="X" V="${rx}"/><Cell N="Y" V="${h}"/></Row>
+        <Row T="ArcTo" IX="8"><Cell N="X" V="0"/><Cell N="Y" V="${h - rx}"/><Cell N="A" V="${rx * 0.4142}"/></Row>
+        <Row T="LineTo" IX="9"><Cell N="X" V="0"/><Cell N="Y" V="${rx}"/></Row>
+      </Section>`;
         }
 
         return `
-      <Geom IX="0">
-        <NoFill>0</NoFill>
-        <NoLine>0</NoLine>
-        <MoveTo IX="1"><X>0</X><Y>0</Y></MoveTo>
-        <LineTo IX="2"><X>${w}</X><Y>0</Y></LineTo>
-        <LineTo IX="3"><X>${w}</X><Y>${h}</Y></LineTo>
-        <LineTo IX="4"><X>0</X><Y>${h}</Y></LineTo>
-        <LineTo IX="5"><X>0</X><Y>0</Y></LineTo>
-      </Geom>`;
+      <Section N="Geometry" IX="0">
+        <Cell N="NoFill" V="0"/>
+        <Cell N="NoLine" V="0"/>
+        <Row T="RelMoveTo" IX="1"><Cell N="X" V="0"/><Cell N="Y" V="0"/></Row>
+        <Row T="RelLineTo" IX="2"><Cell N="X" V="1"/><Cell N="Y" V="0"/></Row>
+        <Row T="RelLineTo" IX="3"><Cell N="X" V="1"/><Cell N="Y" V="1"/></Row>
+        <Row T="RelLineTo" IX="4"><Cell N="X" V="0"/><Cell N="Y" V="1"/></Row>
+        <Row T="RelLineTo" IX="5"><Cell N="X" V="0"/><Cell N="Y" V="0"/></Row>
+      </Section>`;
     }
 
     _ellipseGeom(w, h) {
         return `
-      <Geom IX="0">
-        <NoFill>0</NoFill>
-        <NoLine>0</NoLine>
-        <Ellipse IX="1">
-          <X>${w / 2}</X><Y>${h / 2}</Y>
-          <A>${w}</A><B>${h / 2}</B>
-          <C>${w / 2}</C><D>${h}</D>
-        </Ellipse>
-      </Geom>`;
+      <Section N="Geometry" IX="0">
+        <Cell N="NoFill" V="0"/>
+        <Cell N="NoLine" V="0"/>
+        <Row T="Ellipse" IX="1">
+          <Cell N="X" V="${w / 2}"/><Cell N="Y" V="${h / 2}"/>
+          <Cell N="A" V="${w}"/><Cell N="B" V="${h / 2}"/>
+          <Cell N="C" V="${w / 2}"/><Cell N="D" V="${h}"/>
+        </Row>
+      </Section>`;
     }
 
     _diamondGeom(w, h) {
         return `
-      <Geom IX="0">
-        <NoFill>0</NoFill>
-        <NoLine>0</NoLine>
-        <MoveTo IX="1"><X>${w / 2}</X><Y>0</Y></MoveTo>
-        <LineTo IX="2"><X>${w}</X><Y>${h / 2}</Y></LineTo>
-        <LineTo IX="3"><X>${w / 2}</X><Y>${h}</Y></LineTo>
-        <LineTo IX="4"><X>0</X><Y>${h / 2}</Y></LineTo>
-        <LineTo IX="5"><X>${w / 2}</X><Y>0</Y></LineTo>
-      </Geom>`;
+      <Section N="Geometry" IX="0">
+        <Cell N="NoFill" V="0"/>
+        <Cell N="NoLine" V="0"/>
+        <Row T="RelMoveTo" IX="1"><Cell N="X" V="0.5"/><Cell N="Y" V="0"/></Row>
+        <Row T="RelLineTo" IX="2"><Cell N="X" V="1"/><Cell N="Y" V="0.5"/></Row>
+        <Row T="RelLineTo" IX="3"><Cell N="X" V="0.5"/><Cell N="Y" V="1"/></Row>
+        <Row T="RelLineTo" IX="4"><Cell N="X" V="0"/><Cell N="Y" V="0.5"/></Row>
+        <Row T="RelLineTo" IX="5"><Cell N="X" V="0.5"/><Cell N="Y" V="0"/></Row>
+      </Section>`;
     }
 
     _polygonGeom(shape, w, h) {
@@ -460,11 +492,10 @@ ${shapesXml}
             return this._rectGeom(w, h, 0);
         }
 
-        // Normalize points to local coordinates (0..w, 0..h)
         let xml = `
-      <Geom IX="0">
-        <NoFill>0</NoFill>
-        <NoLine>0</NoLine>`;
+      <Section N="Geometry" IX="0">
+        <Cell N="NoFill" V="0"/>
+        <Cell N="NoLine" V="0"/>`;
 
         const pts = shape.points;
         for (let i = 0; i < pts.length; i++) {
@@ -474,10 +505,10 @@ ${shapesXml}
 
             if (i === 0) {
                 xml += `
-        <MoveTo IX="1"><X>${lx}</X><Y>${ly}</Y></MoveTo>`;
+        <Row T="MoveTo" IX="1"><Cell N="X" V="${lx}"/><Cell N="Y" V="${ly}"/></Row>`;
             } else {
                 xml += `
-        <LineTo IX="${i + 1}"><X>${lx}</X><Y>${ly}</Y></LineTo>`;
+        <Row T="LineTo" IX="${i + 1}"><Cell N="X" V="${lx}"/><Cell N="Y" V="${ly}"/></Row>`;
             }
         }
 
@@ -485,10 +516,10 @@ ${shapesXml}
         const lx0 = (pts[0].x - shape.x) * this.scale;
         const ly0 = h - (pts[0].y - shape.y) * this.scale;
         xml += `
-        <LineTo IX="${pts.length + 1}"><X>${lx0}</X><Y>${ly0}</Y></LineTo>`;
+        <Row T="LineTo" IX="${pts.length + 1}"><Cell N="X" V="${lx0}"/><Cell N="Y" V="${ly0}"/></Row>`;
 
         xml += `
-      </Geom>`;
+      </Section>`;
 
         return xml;
     }
@@ -506,40 +537,37 @@ ${shapesXml}
 
         const textColor = this._colorToRGB(text.style.textColor || text.style.fill) || '#000000';
         const fontSizeInches = fontSize / 72;
-        const fontWeight = text.style.fontWeight === 'bold' ? '1' : '0';
+        const isBold = text.style.fontWeight === 'bold';
 
         return `    <Shape ID="${id}" Type="Shape" LineStyle="0" FillStyle="0" TextStyle="0">
-      <XForm>
-        <PinX>${pinX}</PinX>
-        <PinY>${pinY}</PinY>
-        <Width>${estWidth}</Width>
-        <Height>${estHeight}</Height>
-        <LocPinX>${estWidth / 2}</LocPinX>
-        <LocPinY>${estHeight / 2}</LocPinY>
-        <Angle>0</Angle>
-      </XForm>
-      <Fill>
-        <FillPattern>0</FillPattern>
-      </Fill>
-      <Line>
-        <LinePattern>0</LinePattern>
-      </Line>
-      <Char IX="0">
-        <Font>1</Font>
-        <Color>${textColor}</Color>
-        <Size>${fontSizeInches}</Size>
-        <Style>${fontWeight === '1' ? '1' : '0'}</Style>
-      </Char>
-      <Para IX="0">
-        <HorzAlign>1</HorzAlign>
-      </Para>
+      <Cell N="PinX" V="${pinX}"/>
+      <Cell N="PinY" V="${pinY}"/>
+      <Cell N="Width" V="${estWidth}"/>
+      <Cell N="Height" V="${estHeight}"/>
+      <Cell N="LocPinX" V="${estWidth / 2}"/>
+      <Cell N="LocPinY" V="${estHeight / 2}"/>
+      <Cell N="Angle" V="0"/>
+      <Cell N="FillPattern" V="0"/>
+      <Cell N="LinePattern" V="0"/>
+      <Section N="Character">
+        <Row IX="0">
+          <Cell N="Font" V="Calibri"/>
+          <Cell N="Color" V="${textColor}"/>
+          <Cell N="Size" V="${fontSizeInches}"/>
+          <Cell N="Style" V="${isBold ? '1' : '0'}"/>
+        </Row>
+      </Section>
+      <Section N="Paragraph">
+        <Row IX="0">
+          <Cell N="HorzAlign" V="1"/>
+        </Row>
+      </Section>
       <Text>${this._xmlEscape(text.text)}</Text>
     </Shape>
 `;
     }
 
-    _buildConnector(conn) {
-        const id = this._nextId();
+    _buildConnector(conn, id) {
         const pts = conn.points;
         if (pts.length < 2) return '';
 
@@ -564,14 +592,14 @@ ${shapesXml}
         const lineWeight = (conn.style.strokeWidth || 1) * this.scale;
         const dashPattern = conn.style.strokeDasharray ? '2' : '1';
 
-        // Arrow
+        // Arrow: 5 = filled triangle
         const endArrow = conn.hasArrow ? '5' : '0';
 
         // Build geometry
         let geomXml = `
-      <Geom IX="0">
-        <NoFill>1</NoFill>
-        <NoLine>0</NoLine>`;
+      <Section N="Geometry" IX="0">
+        <Cell N="NoFill" V="1"/>
+        <Cell N="NoLine" V="0"/>`;
 
         for (let i = 0; i < pts.length; i++) {
             const lx = (pts[i].x - minX) * this.scale;
@@ -579,54 +607,36 @@ ${shapesXml}
 
             if (i === 0) {
                 geomXml += `
-        <MoveTo IX="1"><X>${lx}</X><Y>${ly}</Y></MoveTo>`;
+        <Row T="MoveTo" IX="1"><Cell N="X" V="${lx}"/><Cell N="Y" V="${ly}"/></Row>`;
             } else {
                 geomXml += `
-        <LineTo IX="${i + 1}"><X>${lx}</X><Y>${ly}</Y></LineTo>`;
+        <Row T="LineTo" IX="${i + 1}"><Cell N="X" V="${lx}"/><Cell N="Y" V="${ly}"/></Row>`;
             }
         }
 
         geomXml += `
-      </Geom>`;
-
-        // Connection references
-        let connXml = '';
-        if (conn.fromShape !== null) {
-            const fromId = conn.fromShape + 1; // 1-based shape IDs
-            connXml += `
-      <Connection IX="0">
-        <X>0</X><Y>0</Y>
-      </Connection>`;
-        }
+      </Section>`;
 
         return `    <Shape ID="${id}" Type="Shape" LineStyle="0" FillStyle="0" TextStyle="0">
-      <XForm>
-        <PinX>${pinX}</PinX>
-        <PinY>${pinY}</PinY>
-        <Width>${w}</Width>
-        <Height>${h}</Height>
-        <LocPinX>${w / 2}</LocPinX>
-        <LocPinY>${h / 2}</LocPinY>
-        <Angle>0</Angle>
-      </XForm>
-      <XForm1D>
-        <BeginX>${this._svgToVisioX(startPt.x)}</BeginX>
-        <BeginY>${this._svgToVisioY(startPt.y)}</BeginY>
-        <EndX>${this._svgToVisioX(endPt.x)}</EndX>
-        <EndY>${this._svgToVisioY(endPt.y)}</EndY>
-      </XForm1D>
-      <Fill>
-        <FillPattern>0</FillPattern>
-      </Fill>
-      <Line>
-        <LineWeight>${lineWeight}</LineWeight>
-        <LineColor>${lineColor}</LineColor>
-        <LinePattern>${dashPattern}</LinePattern>
-        <BeginArrow>0</BeginArrow>
-        <EndArrow>${endArrow}</EndArrow>
-        <BeginArrowSize>2</BeginArrowSize>
-        <EndArrowSize>2</EndArrowSize>
-      </Line>${geomXml}
+      <Cell N="PinX" V="${pinX}"/>
+      <Cell N="PinY" V="${pinY}"/>
+      <Cell N="Width" V="${w}"/>
+      <Cell N="Height" V="${h}"/>
+      <Cell N="LocPinX" V="${w / 2}"/>
+      <Cell N="LocPinY" V="${h / 2}"/>
+      <Cell N="Angle" V="0"/>
+      <Cell N="BeginX" V="${this._svgToVisioX(startPt.x)}"/>
+      <Cell N="BeginY" V="${this._svgToVisioY(startPt.y)}"/>
+      <Cell N="EndX" V="${this._svgToVisioX(endPt.x)}"/>
+      <Cell N="EndY" V="${this._svgToVisioY(endPt.y)}"/>
+      <Cell N="FillPattern" V="0"/>
+      <Cell N="LineWeight" V="${lineWeight}"/>
+      <Cell N="LineColor" V="${lineColor}"/>
+      <Cell N="LinePattern" V="${dashPattern}"/>
+      <Cell N="BeginArrow" V="0"/>
+      <Cell N="EndArrow" V="${endArrow}"/>
+      <Cell N="BeginArrowSize" V="2"/>
+      <Cell N="EndArrowSize" V="2"/>${geomXml}
     </Shape>
 `;
     }
