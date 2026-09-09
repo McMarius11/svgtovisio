@@ -29,9 +29,14 @@ jobs:
         with:
           node-version: '20'
 
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run tests
+        run: npm test
+
       - name: Build standalone site
         run: |
-          npm install
           node build.js
           mkdir _site
           cp dist/index.html _site/index.html

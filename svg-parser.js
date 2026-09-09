@@ -12,6 +12,25 @@
  */
 
 class SvgParser {
+    /**
+     * Presentation attributes that also exist as CSS properties.
+     * These form the lowest layer of the cascade (specificity 0).
+     */
+    static PRESENTATION_ATTRS = Object.freeze([
+        'fill', 'fill-opacity', 'stroke', 'stroke-width', 'stroke-dasharray',
+        'stroke-opacity', 'stroke-linecap', 'stroke-linejoin', 'opacity',
+        'font-size', 'font-family', 'font-weight', 'font-style', 'text-anchor',
+        'rx', 'ry', 'color', 'visibility', 'stop-color'
+    ]);
+
+    /** Properties that SVG inherits from ancestor elements. */
+    static INHERITED_PROPS = Object.freeze([
+        'fill', 'fill-opacity', 'stroke', 'stroke-width', 'stroke-dasharray',
+        'stroke-opacity', 'stroke-linecap', 'stroke-linejoin', 'font-size',
+        'font-family', 'font-weight', 'font-style', 'text-anchor', 'color',
+        'visibility'
+    ]);
+
     constructor(svgString) {
         this.svgString = svgString;
         this.parser = new DOMParser();
@@ -23,8 +42,13 @@ class SvgParser {
         this.texts = [];
         this.defs = {};
         this.gradients = {};
+        this.idMap = {};
         this.warnings = [];
         this._warned = new Set();
+        // _extractStyle walks the ancestor chain of every element, so the same
+        // ancestors get resolved over and over; cache both layers.
+        this._ownPropsCache = new Map();
+        this._ruleCache = new Map();
     }
 
     /** Record a conversion caveat once, so the UI can surface what was dropped. */
@@ -93,7 +117,6 @@ class SvgParser {
         });
 
         // Index every id once so <use> can resolve references cheaply
-        this.idMap = {};
         this.svgEl.querySelectorAll('[id]').forEach(el => {
             const id = el.getAttribute('id');
             if (id && !this.idMap[id]) this.idMap[id] = el;
@@ -256,7 +279,7 @@ class SvgParser {
             return;
         }
 
-        const target = this.idMap && this.idMap[href.slice(1)];
+        const target = this.idMap[href.slice(1)];
         if (!target) {
             this._warn(`<use> references "${href}", which does not exist in this file`);
             return;
@@ -279,25 +302,6 @@ class SvgParser {
         const inner = this._combineTransform(transform, target.getAttribute('transform'));
         const style = this._scaleStyle(this._extractStyle(target), inner);
         this._dispatchElement(tag, target, style, inner);
-    }
-
-    /**
-     * Presentation attributes that also exist as CSS properties.
-     * These form the lowest layer of the cascade (specificity 0).
-     */
-    static get PRESENTATION_ATTRS() {
-        return ['fill', 'fill-opacity', 'stroke', 'stroke-width', 'stroke-dasharray',
-                'stroke-opacity', 'stroke-linecap', 'stroke-linejoin', 'opacity',
-                'font-size', 'font-family', 'font-weight', 'font-style', 'text-anchor',
-                'rx', 'ry', 'color', 'visibility', 'stop-color'];
-    }
-
-    /** Properties that SVG inherits from ancestor elements. */
-    static get INHERITED_PROPS() {
-        return ['fill', 'fill-opacity', 'stroke', 'stroke-width', 'stroke-dasharray',
-                'stroke-opacity', 'stroke-linecap', 'stroke-linejoin', 'font-size',
-                'font-family', 'font-weight', 'font-style', 'text-anchor', 'color',
-                'visibility'];
     }
 
     /**
@@ -361,19 +365,43 @@ class SvgParser {
      * presentation attributes < stylesheet rules (by specificity) < inline style.
      */
     _ownProps(el) {
+        const cached = this._ownPropsCache.get(el);
+        if (cached) return cached;
+
         const props = {};
         for (const name of SvgParser.PRESENTATION_ATTRS) {
             const v = el.getAttribute(name);
             if (v !== null && v !== '') props[name] = v;
         }
-        const matched = (this.cssRules || [])
-            .filter(r => this._selectorMatches(r.sel, el))
-            .sort((a, b) => (a.spec - b.spec) || (a.order - b.order));
-        for (const r of matched) Object.assign(props, r.decls);
+        for (const r of this._matchingRules(el)) Object.assign(props, r.decls);
 
         const inline = el.getAttribute('style');
         if (inline) Object.assign(props, this._parseDeclarations(inline));
+
+        this._ownPropsCache.set(el, props);
         return props;
+    }
+
+    /**
+     * Stylesheet rules that apply to an element, weakest first. Elements that
+     * share a tag/class/id share the answer, so this is resolved once per
+     * distinct selector target rather than once per element.
+     */
+    _matchingRules(el) {
+        const rules = this.cssRules || [];
+        if (rules.length === 0) return rules;
+
+        const key = el.tagName.toLowerCase() + '|' +
+                    (el.getAttribute('class') || '') + '|' +
+                    (el.getAttribute('id') || '');
+        let matched = this._ruleCache.get(key);
+        if (!matched) {
+            matched = rules
+                .filter(r => this._selectorMatches(r.sel, el))
+                .sort((a, b) => (a.spec - b.spec) || (a.order - b.order));
+            this._ruleCache.set(key, matched);
+        }
+        return matched;
     }
 
     _extractStyle(el) {
@@ -427,10 +455,6 @@ class SvgParser {
     //   x' = a*x + c*y + e
     //   y' = b*x + d*y + f
     // A string would only ever let us honour the outermost translate.
-
-    static get IDENTITY() {
-        return { a: 1, b: 0, c: 0, d: 1, e: 0, f: 0 };
-    }
 
     _matrixMultiply(m1, m2) {
         return {

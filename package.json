@@ -2,14 +2,13 @@
   "name": "svgtovisio",
   "version": "1.0.0",
   "description": "Convert Claude-generated SVG diagrams to Visio (.vsdx) files",
-  "main": "index.js",
   "scripts": {
     "start": "npx serve .",
     "test": "node test.js"
   },
   "repository": {
     "type": "git",
-    "url": "http://local_proxy@127.0.0.1:35507/git/McMarius11/svgtovisio"
+    "url": "git+https://github.com/McMarius11/svgtovisio.git"
   },
   "keywords": [
     "svg",
@@ -18,10 +17,16 @@
     "converter"
   ],
   "author": "",
-  "license": "ISC",
+  "license": "MIT",
   "dependencies": {
-    "jsdom": "^29.0.1",
     "jszip": "^3.10.1",
     "pako": "^2.1.0"
+  },
+  "homepage": "https://McMarius11.github.io/svgtovisio",
+  "bugs": {
+    "url": "https://github.com/McMarius11/svgtovisio/issues"
+  },
+  "devDependencies": {
+    "jsdom": "^29.0.1"
   }
 }
