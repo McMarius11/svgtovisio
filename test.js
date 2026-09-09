@@ -9,6 +9,8 @@ const { JSDOM } = require('jsdom');
 // Set up browser globals for the parser
 const dom = new JSDOM('<!DOCTYPE html><html><body></body></html>');
 global.DOMParser = dom.window.DOMParser;
+global.JSZip = require('jszip');
+const domParser = new dom.window.DOMParser();
 
 // Load the parsers
 const parserCode = fs.readFileSync('./svg-parser.js', 'utf8');
@@ -275,6 +277,61 @@ assert(Math.abs(r11.shapes[0].angle + Math.PI / 2) < 1e-6,
 assert(new VsdxBuilder(r11)._page1().indexOf('N="Angle" V="-1.57') !== -1,
     'the angle reaches the VSDX');
 
-// Summary
-console.log(`\n=== Results: ${passed} passed, ${failed} failed ===`);
-process.exit(failed > 0 ? 1 : 0);
+// Test 12: the generated package is a well-formed .vsdx
+console.log('\n--- Test 12: Generated .vsdx package ---');
+
+function xmlError(xml) {
+    const doc = domParser.parseFromString(xml, 'application/xml');
+    const err = doc.querySelector('parsererror');
+    return err ? err.textContent.slice(0, 120) : null;
+}
+
+// Text that would break the XML if it were not escaped
+const nastySvg = '<svg viewBox="0 0 200 120">' +
+    '<rect x="10" y="10" width="120" height="50" fill="#ffffff" stroke="#000000"/>' +
+    '<text x="20" y="30">a &lt; b &amp; c "q" &apos;x&apos;</text>' +
+    '<text x="20" y="50">2 &gt; 1 &amp;&amp; 3 &lt; 4</text></svg>';
+const nastyParsed = new SvgParser(nastySvg).parse();
+const nastyBuilder = new VsdxBuilder(nastyParsed);
+
+const parts = {
+    'page1.xml': nastyBuilder._page1(),
+    'pages.xml': nastyBuilder._pages(),
+    'document.xml': nastyBuilder._document(),
+    '[Content_Types].xml': nastyBuilder._contentTypes(),
+    'app.xml': nastyBuilder._appProps(),
+    'core.xml': nastyBuilder._coreProps(),
+    'windows.xml': nastyBuilder._windows()
+};
+for (const name of Object.keys(parts)) {
+    const err = xmlError(parts[name]);
+    assert(err === null, `${name} is well-formed XML${err ? ' (' + err + ')' : ''}`);
+}
+assert(parts['page1.xml'].indexOf('a &lt; b &amp; c') !== -1, 'shape text is XML-escaped');
+
+// Full package, built the same way the browser builds it
+(async () => {
+    let zipFailed = null;
+    try {
+        const blob = await new VsdxBuilder(nastyParsed).build();
+        // JSZip emits a Blob; loadAsync wants bytes
+        const zip = await JSZip.loadAsync(await blob.arrayBuffer());
+        const required = ['[Content_Types].xml', '_rels/.rels', 'visio/document.xml',
+                          'visio/pages/pages.xml', 'visio/pages/page1.xml'];
+        for (const path of required) {
+            assert(zip.file(path) !== null, `package contains ${path}`);
+        }
+        for (const path of Object.keys(zip.files)) {
+            if (!/\.(xml|rels)$/.test(path)) continue;
+            const err = xmlError(await zip.file(path).async('string'));
+            assert(err === null, `${path} in the package is well-formed${err ? ' (' + err + ')' : ''}`);
+        }
+    } catch (e) {
+        zipFailed = e;
+        assert(false, `building the .vsdx package threw: ${e.message}`);
+    }
+
+    console.log(`\n=== Results: ${passed} passed, ${failed} failed ===`);
+    process.exit(failed > 0 ? 1 : 0);
+})();
+
