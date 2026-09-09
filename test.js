@@ -212,6 +212,69 @@ assert(pageXml.indexOf('N="LineColor" V="#009640"') !== -1, 'connector colour re
 assert((pageXml.match(/<cp IX=/g) || []).length >= 2, 'per-line character runs are emitted');
 assert(pageXml.indexOf('N="HorzAlign" V="0"') !== -1, 'left-aligned text is not force-centred');
 
+// Test 9: transforms, references, paint servers, markers
+console.log('\n--- Test 9: Transforms and references ---');
+const trSvg = fs.readFileSync('./test-samples/transforms-and-refs.svg', 'utf8');
+const trParser = new SvgParser(trSvg);
+const r9 = trParser.parse();
+
+const nested = r9.shapes.find(s => s.width === 60);
+assert(nested && nested.x === 130 && nested.y === 140,
+    `nested translates compose (got ${nested && nested.x}/${nested && nested.y}, want 130/140)`);
+
+const scaled = r9.shapes.find(s => s.width === 60 * 1 && s.height === 30);
+assert(scaled && scaled.x === 10 && scaled.width === 60,
+    `scale() resizes and repositions (got x=${scaled && scaled.x} w=${scaled && scaled.width})`);
+assert(scaled && scaled.style.strokeWidth === 3,
+    `stroke width scales with the transform (got ${scaled && scaled.style.strokeWidth}, want 3)`);
+
+const grad = r9.shapes.find(s => s.x === 200 && s.width === 50);
+assert(grad && grad.style.fill === '#800080',
+    `gradient flattens to a blend, not black (got ${grad && grad.style.fill})`);
+
+const used = r9.shapes.find(s => s.width === 40 && s.height === 20 && s.style.fill === '#eeeeee');
+assert(used && used.x === 250 && used.y === 120,
+    `<use> is expanded at its offset (got ${used && used.x}/${used && used.y})`);
+
+const startArrow = r9.connectors.find(c => c.arrowStart);
+assert(startArrow && startArrow.arrowStart === true && startArrow.arrowEnd === false,
+    'marker-start is reported on the start, not the end');
+
+const first = r9.texts.find(t => t.text === 'First');
+const second = r9.texts.find(t => t.text === 'Second');
+assert(first && second, 'text before a positioned <tspan> is kept, and the tspan becomes its own line');
+assert(second && second.y === 120, `positioned tspan keeps its own y (got ${second && second.y})`);
+assert(r9.texts.some(t => t.text === 'Bare bold'), 'an unpositioned tspan stays inline');
+
+assert(trParser.warnings.some(w => w.indexOf('<image>') === 0), 'unsupported <image> is reported');
+assert(trParser.warnings.some(w => w.indexOf('gradient') !== -1), 'gradient flattening is reported');
+assert(trParser.glueThreshold > 0 && trParser.glueThreshold < 30,
+    `glue radius scales with the drawing (got ${trParser.glueThreshold})`);
+
+// Test 10: those features reach the VSDX
+console.log('\n--- Test 10: VSDX for transforms and references ---');
+const xml9 = new VsdxBuilder(r9)._page1();
+
+const pinXs = (xml9.match(/N="PinX" V="([-\d.]+)"/g) || [])
+    .map(m => parseFloat(/([-\d.]+)"$/.exec(m)[1]));
+assert(pinXs.length > 0 && pinXs.every(v => v >= 0),
+    'viewBox origin is applied, so nothing lands at a negative X');
+assert(xml9.indexOf('N="BeginArrow" V="5"') !== -1, 'marker-start becomes a BeginArrow');
+assert(xml9.indexOf('N="LinePattern" V="3"') !== -1, 'a fine dash array becomes a dotted pattern');
+assert(xml9.indexOf('N="LinePattern" V="4"') !== -1, 'a four-value dash array becomes dash-dot');
+assert(xml9.indexOf('N="LineColorTrans" V="0.75"') !== -1, 'stroke-opacity becomes line transparency');
+assert(xml9.indexOf('V="url(') === -1, 'no raw url() paint leaks into the VSDX');
+
+// Test 11: rotation is carried as an angle rather than baked away
+console.log('\n--- Test 11: Rotation ---');
+const rotSvg = '<svg viewBox="0 0 200 200"><g transform="rotate(90,50,50)">' +
+               '<rect x="40" y="20" width="20" height="60" fill="#fff" stroke="#000"/></g></svg>';
+const r11 = new SvgParser(rotSvg).parse();
+assert(Math.abs(r11.shapes[0].angle + Math.PI / 2) < 1e-6,
+    `rotate(90) becomes a -90 deg Visio angle (got ${r11.shapes[0].angle})`);
+assert(new VsdxBuilder(r11)._page1().indexOf('N="Angle" V="-1.57') !== -1,
+    'the angle reaches the VSDX');
+
 // Summary
 console.log(`\n=== Results: ${passed} passed, ${failed} failed ===`);
 process.exit(failed > 0 ? 1 : 0);

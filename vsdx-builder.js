@@ -27,6 +27,11 @@ class VsdxBuilder {
         if (this.pageWidthInches < 1) this.pageWidthInches = 8.5;
         if (this.pageHeightInches < 1) this.pageHeightInches = 11;
 
+        // A viewBox may start anywhere; without this offset a drawing with a
+        // negative origin lands off the page.
+        this.viewBoxX = this.data.viewBox.x || 0;
+        this.viewBoxY = this.data.viewBox.y || 0;
+
         this.scale = 1 / 96; // px to inches
 
         // Track shape IDs for connector gluing
@@ -65,11 +70,34 @@ class VsdxBuilder {
 
     // Convert SVG Y (top-down) to Visio Y (bottom-up) in inches
     _svgToVisioY(svgY) {
-        return this.pageHeightInches - (svgY * this.scale);
+        return this.pageHeightInches - ((svgY - this.viewBoxY) * this.scale);
     }
 
     _svgToVisioX(svgX) {
-        return svgX * this.scale;
+        return (svgX - this.viewBoxX) * this.scale;
+    }
+
+    /**
+     * Map stroke-dasharray onto Visio's line patterns instead of collapsing
+     * every dashed style into the same one.
+     * 1 = solid, 2 = dashed, 3 = dotted, 4 = dash-dot.
+     */
+    _linePattern(dasharray) {
+        if (!dasharray) return 1;
+        const nums = String(dasharray).split(/[\s,]+/)
+            .map(parseFloat).filter(n => !isNaN(n) && n >= 0);
+        if (nums.length === 0) return 1;
+
+        const dashes = nums.filter((n, i) => i % 2 === 0);
+        if (Math.max.apply(null, dashes) <= 2) return 3;
+        if (nums.length >= 4) return 4;
+        return 2;
+    }
+
+    /** Visio transparency (0..1) from the opacity pair on a style. */
+    _transparency(a, b) {
+        const v = (a === undefined ? 1 : a) * (b === undefined ? 1 : b);
+        return Math.min(1, Math.max(0, 1 - v));
     }
 
     // SVG text-anchor -> Visio HorzAlign (0 = left, 1 = centre, 2 = right)
@@ -82,6 +110,8 @@ class VsdxBuilder {
 
     _colorToRGB(color) {
         if (!color || color === 'none' || color === 'transparent') return null;
+        // Unresolved paint servers stay unpainted rather than turning black
+        if (/^url\(/i.test(color.trim())) return null;
 
         // Named colors
         const named = {
@@ -391,7 +421,7 @@ ${shapesXml}
       <Cell N="Height" V="${h}"/>
       <Cell N="LocPinX" V="${w / 2}"/>
       <Cell N="LocPinY" V="${h / 2}"/>
-      <Cell N="Angle" V="0"/>
+      <Cell N="Angle" V="${shape.angle || 0}"/>
 `;
 
         // Fill cells
@@ -408,9 +438,11 @@ ${shapesXml}
 
         // Line cells
         if (lineColor && shape.style.stroke !== 'none') {
-            const dashPattern = shape.style.strokeDasharray ? '2' : '1';
+            const dashPattern = this._linePattern(shape.style.strokeDasharray);
+            const lineTrans = this._transparency(shape.style.strokeOpacity, shape.style.opacity);
             cellsXml += `      <Cell N="LineWeight" V="${lineWeight}"/>
       <Cell N="LineColor" V="${lineColor}"/>
+      <Cell N="LineColorTrans" V="${lineTrans}"/>
       <Cell N="LinePattern" V="${dashPattern}"/>
 `;
         } else {
@@ -675,10 +707,15 @@ ${cellsXml}${sectionsXml}${textXml}
 
         const lineColor = this._colorToRGB(conn.style.stroke) || '#000000';
         const lineWeight = (conn.style.strokeWidth || 1) * this.scale;
-        const dashPattern = conn.style.strokeDasharray ? '2' : '1';
+        const dashPattern = this._linePattern(conn.style.strokeDasharray);
+        const lineTrans = this._transparency(conn.style.strokeOpacity, conn.style.opacity);
 
         // Arrow: 5 = filled triangle
-        const endArrow = conn.hasArrow ? '5' : '0';
+        // Fall back to hasArrow for parsers that do not report the ends
+        // (the Draw.io parser), otherwise honour marker-start/marker-end.
+        const hasEnds = conn.arrowStart !== undefined || conn.arrowEnd !== undefined;
+        const beginArrow = (hasEnds ? conn.arrowStart : false) ? '5' : '0';
+        const endArrow = (hasEnds ? conn.arrowEnd : conn.hasArrow) ? '5' : '0';
 
         // Build geometry
         let geomXml = `
@@ -718,10 +755,11 @@ ${cellsXml}${sectionsXml}${textXml}
       <Cell N="LineWeight" V="${lineWeight}"/>
       <Cell N="LineColor" V="${lineColor}"/>
       <Cell N="LinePattern" V="${dashPattern}"/>
-      <Cell N="BeginArrow" V="0"/>
+      <Cell N="BeginArrow" V="${beginArrow}"/>
       <Cell N="EndArrow" V="${endArrow}"/>
       <Cell N="BeginArrowSize" V="2"/>
-      <Cell N="EndArrowSize" V="2"/>${geomXml}
+      <Cell N="EndArrowSize" V="2"/>
+      <Cell N="LineColorTrans" V="${lineTrans}"/>${geomXml}
     </Shape>
 `;
     }

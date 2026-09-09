@@ -13,6 +13,7 @@
     const previewSection = document.getElementById('previewSection');
     const previewContainer = document.getElementById('previewContainer');
     const statsEl = document.getElementById('stats');
+    const warningsEl = document.getElementById('warnings');
 
     let currentInput = '';
     let currentFormat = 'svg'; // 'svg' or 'drawio'
@@ -109,7 +110,18 @@
                 svg.style.maxWidth = '100%';
                 svg.style.height = 'auto';
             }
+            // The preview shows the browser's rendering, which always looks
+            // right. Parse it here as well so anything the converter cannot
+            // reproduce is visible before the download, not after.
+            try {
+                const probe = new SvgParser(svgString);
+                probe.parse();
+                showWarnings(probe.warnings);
+            } catch (e) {
+                showWarnings([]);
+            }
         } else {
+            showWarnings([]);
             previewContainer.innerHTML = '<p style="color:#888; padding:2rem;">Draw.io XML loaded (no visual preview)</p>';
         }
     }
@@ -249,6 +261,8 @@
 
             log(`Found ${stats.shapes} shapes, ${stats.connectors} connectors, ${stats.texts} standalone texts`, 'info');
             showStats(stats);
+            showWarnings(stats.warnings);
+            (stats.warnings || []).forEach(w => log(w, 'warn'));
 
             // Build VSDX
             log('Building VSDX file...', 'info');
@@ -276,6 +290,23 @@
         } finally {
             convertBtn.disabled = false;
         }
+    }
+
+    function showWarnings(warnings) {
+        if (!warningsEl) return;
+        if (!warnings || warnings.length === 0) {
+            warningsEl.style.display = 'none';
+            warningsEl.innerHTML = '';
+            return;
+        }
+        const esc = (t) => String(t)
+            .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        warningsEl.style.display = 'block';
+        warningsEl.innerHTML =
+            `<strong>${warnings.length} thing${warnings.length === 1 ? '' : 's'} the ` +
+            `.vsdx cannot reproduce exactly:</strong><ul>` +
+            warnings.map(w => `<li>${esc(w)}</li>`).join('') +
+            `</ul>`;
     }
 
     function showStats(stats) {

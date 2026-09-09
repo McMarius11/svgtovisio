@@ -23,10 +23,21 @@ Convert SVG diagrams and Draw.io files to editable Visio (.vsdx) files — direc
 ## What gets preserved
 
 - **Shapes** — rectangles, rounded rectangles, circles, ellipses, diamonds, polygons
-- **Connectors & Arrows** — lines, polylines, paths with arrowheads, glued to source/target shapes
-- **Text** — labels inside shapes, standalone text, multi-line text
-- **Styles** — fill colors, stroke colors, line width, dashed lines, opacity, font size, bold
-- **Layout** — positions and sizes are accurately converted to Visio coordinates
+- **Connectors & Arrows** — lines, polylines, paths with arrowheads on either or both ends, glued to source/target shapes
+- **Text** — labels inside shapes, standalone text, multi-line text, `<tspan>` lines, per-line font size, weight, colour and alignment
+- **Styles** — CSS `<style>` blocks and `class` attributes, inherited properties, fill and stroke colours, line width, dash patterns (dashed / dotted / dash-dot), fill and stroke opacity, font size, bold
+- **Layout** — positions and sizes converted to Visio coordinates, including the `viewBox` origin
+- **Transforms** — `translate`, `scale`, `rotate`, `skew` and `matrix`, composed correctly through nested groups
+- **References** — `<use>` is expanded; gradients are flattened to a single colour
+
+## What it cannot do
+
+The converter reports these in the preview rather than dropping them silently:
+
+- `<image>` and `<foreignObject>` are skipped
+- `<textPath>` text is placed at its anchor instead of along the path
+- `clip-path`, `mask` and `filter` are ignored — shapes are converted unclipped
+- gradients and patterns become a flat colour
 
 ## Run locally
 

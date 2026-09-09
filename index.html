@@ -124,6 +124,17 @@
             flex-wrap: wrap;
             margin-top: 1rem;
         }
+        .warnings {
+            margin-top: 0.75rem;
+            padding: 0.75rem 1rem;
+            border-left: 3px solid #d19a2f;
+            background: rgba(209, 154, 47, 0.08);
+            border-radius: 4px;
+            font-size: 0.85rem;
+            line-height: 1.5;
+        }
+        .warnings ul { margin: 0.4rem 0 0; padding-left: 1.1rem; }
+        .warnings li { margin: 0.15rem 0; }
         .stat-badge {
             background: #1a2744;
             padding: 0.4rem 0.8rem;
@@ -180,6 +191,7 @@
             <h3>SVG Preview</h3>
             <div class="preview-container" id="previewContainer"></div>
             <div class="stats" id="stats"></div>
+            <div class="warnings" id="warnings" style="display:none"></div>
         </div>
     </div>
 
