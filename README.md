@@ -79,9 +79,12 @@ badly, that is the first place to look.
 npm ci
 npm run check        # lint + type-check + both test suites
 npm test             # unit/integration tests and golden-file snapshots
+npm run build        # regenerate dist/index.html
 npm run preview -- diagram.svg out.svg   # render what Visio will show
-node build.js        # regenerate dist/index.html
 ```
+
+To try a change in the browser, open `dist/index.html` directly after a build,
+or serve the project with `npm start`.
 
 There is no bundler and no transpiler: the browser loads the sources directly,
 and `build.js` inlines them into a single self-contained `dist/index.html`.
@@ -102,40 +105,6 @@ in JSDoc comments, so the files stay plain JavaScript.
 
 `tools/preview.js` renders the generated Visio page back to SVG, which is the
 only way to see what Visio will draw without owning Visio.
-
-## Run locally
-
-```bash
-# Just open the standalone build
-open dist/index.html
-
-# Or serve the project
-npx serve .
-```
-
-## Build & test
-
-```bash
-npm install
-
-# Build standalone dist/index.html (all dependencies inlined)
-node build.js
-
-# Run tests
-npm test
-```
-
-## Architecture
-
-The converter runs entirely in the browser — no server needed.
-
-1. **SVG Parser** (`svg-parser.js`) — Parses the SVG DOM and extracts shapes, connectors, text, and styles. Associates text labels with their containing shapes and detects connector endpoints.
-
-2. **Draw.io Parser** (`drawio-parser.js`) — Parses Draw.io XML (mxGraphModel), including compressed diagrams. Extracts vertices, edges, styles, and labels into the same format as the SVG parser.
-
-3. **VSDX Builder** (`vsdx-builder.js`) — Generates a valid `.vsdx` file (ZIP with XML following the MS-VSDX/Open Packaging Convention spec). Converts coordinates to Visio's bottom-left origin system in inches. Uses [JSZip](https://stuk.github.io/jszip/).
-
-4. **App** (`app.js`) — Handles drag-and-drop, file detection, live preview rendering, and download.
 
 ## License
 
