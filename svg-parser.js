@@ -37,8 +37,10 @@ class SvgParser {
         }
 
         this._parseViewBox();
+        this._parseStyleSheet();
         this._parseDefs();
         this._parseElements(this.svgEl, null);
+        this._markContainers();
         this._associateTextsWithShapes();
         this._detectConnectors();
 
@@ -123,82 +125,142 @@ class SvgParser {
         }
     }
 
+    /**
+     * Presentation attributes that also exist as CSS properties.
+     * These form the lowest layer of the cascade (specificity 0).
+     */
+    static get PRESENTATION_ATTRS() {
+        return ['fill', 'fill-opacity', 'stroke', 'stroke-width', 'stroke-dasharray',
+                'stroke-linecap', 'stroke-linejoin', 'opacity', 'font-size', 'font-family',
+                'font-weight', 'font-style', 'text-anchor', 'rx', 'ry', 'color', 'visibility'];
+    }
+
+    /** Properties that SVG inherits from ancestor elements. */
+    static get INHERITED_PROPS() {
+        return ['fill', 'fill-opacity', 'stroke', 'stroke-width', 'stroke-dasharray',
+                'stroke-linecap', 'stroke-linejoin', 'font-size', 'font-family',
+                'font-weight', 'font-style', 'text-anchor', 'color', 'visibility'];
+    }
+
+    /**
+     * Collect the rules of every <style> block so that class-based SVGs
+     * (.box, .fw, ...) keep their fills, strokes and fonts.
+     */
+    _parseStyleSheet() {
+        this.cssRules = [];
+        this.svgEl.querySelectorAll('style').forEach(styleEl => {
+            const css = styleEl.textContent.replace(/\/\*[\s\S]*?\*\//g, '');
+            const ruleRe = /([^{}]+)\{([^{}]*)\}/g;
+            let m;
+            while ((m = ruleRe.exec(css)) !== null) {
+                const decls = this._parseDeclarations(m[2]);
+                if (Object.keys(decls).length === 0) continue;
+                for (const sel of m[1].split(',').map(x => x.trim()).filter(Boolean)) {
+                    const spec = this._selectorSpecificity(sel);
+                    if (spec === null) continue; // combinators / pseudo classes unsupported
+                    this.cssRules.push({ sel, spec, decls, order: this.cssRules.length });
+                }
+            }
+        });
+    }
+
+    _parseDeclarations(text) {
+        const decls = {};
+        for (const prop of text.split(';')) {
+            const idx = prop.indexOf(':');
+            if (idx < 0) continue;
+            const key = prop.slice(0, idx).trim().toLowerCase();
+            const val = prop.slice(idx + 1).trim();
+            if (key && val) decls[key] = val;
+        }
+        return decls;
+    }
+
+    /** Specificity of a simple compound selector, or null when unsupported. */
+    _selectorSpecificity(sel) {
+        if (/[\s>+~:\[\]*]/.test(sel)) return null;
+        const ids = (sel.match(/#[\w-]+/g) || []).length;
+        const classes = (sel.match(/\.[\w-]+/g) || []).length;
+        const tag = /^[a-zA-Z]/.test(sel) ? 1 : 0;
+        return ids * 10000 + classes * 100 + tag;
+    }
+
+    _selectorMatches(sel, el) {
+        const tagPart = sel.match(/^[a-zA-Z][\w-]*/);
+        if (tagPart && el.tagName.toLowerCase() !== tagPart[0].toLowerCase()) return false;
+        for (const id of sel.match(/#[\w-]+/g) || []) {
+            if (el.getAttribute('id') !== id.slice(1)) return false;
+        }
+        const classAttr = (el.getAttribute('class') || '').split(/\s+/);
+        for (const cls of sel.match(/\.[\w-]+/g) || []) {
+            if (classAttr.indexOf(cls.slice(1)) === -1) return false;
+        }
+        return true;
+    }
+
+    /**
+     * CSS cascade for a single element:
+     * presentation attributes < stylesheet rules (by specificity) < inline style.
+     */
+    _ownProps(el) {
+        const props = {};
+        for (const name of SvgParser.PRESENTATION_ATTRS) {
+            const v = el.getAttribute(name);
+            if (v !== null && v !== '') props[name] = v;
+        }
+        const matched = (this.cssRules || [])
+            .filter(r => this._selectorMatches(r.sel, el))
+            .sort((a, b) => (a.spec - b.spec) || (a.order - b.order));
+        for (const r of matched) Object.assign(props, r.decls);
+
+        const inline = el.getAttribute('style');
+        if (inline) Object.assign(props, this._parseDeclarations(inline));
+        return props;
+    }
+
     _extractStyle(el) {
-        const style = {
-            fill: 'none',
-            fillOpacity: 1,
-            stroke: 'none',
-            strokeWidth: 1,
-            strokeDasharray: null,
-            fontSize: 14,
-            fontFamily: 'Calibri',
-            fontWeight: 'normal',
-            textAnchor: 'middle',
-            opacity: 1,
-            rx: 0,
-            ry: 0
-        };
+        // Ancestor chain (root first) so inherited properties resolve correctly.
+        const chain = [];
+        let node = el;
+        while (node && node.nodeType === 1) {
+            chain.unshift(node);
+            if (node === this.svgEl) break;
+            node = node.parentNode;
+        }
 
-        // Read from attributes
-        const fillAttr = el.getAttribute('fill');
-        if (fillAttr) style.fill = fillAttr;
-
-        const strokeAttr = el.getAttribute('stroke');
-        if (strokeAttr) style.stroke = strokeAttr;
-
-        const strokeWidthAttr = el.getAttribute('stroke-width');
-        if (strokeWidthAttr) style.strokeWidth = parseFloat(strokeWidthAttr);
-
-        const strokeDashAttr = el.getAttribute('stroke-dasharray');
-        if (strokeDashAttr) style.strokeDasharray = strokeDashAttr;
-
-        const opacityAttr = el.getAttribute('opacity');
-        if (opacityAttr) style.opacity = parseFloat(opacityAttr);
-
-        const fillOpacityAttr = el.getAttribute('fill-opacity');
-        if (fillOpacityAttr) style.fillOpacity = parseFloat(fillOpacityAttr);
-
-        const fontSizeAttr = el.getAttribute('font-size');
-        if (fontSizeAttr) style.fontSize = parseFloat(fontSizeAttr);
-
-        const fontFamilyAttr = el.getAttribute('font-family');
-        if (fontFamilyAttr) style.fontFamily = fontFamilyAttr;
-
-        const fontWeightAttr = el.getAttribute('font-weight');
-        if (fontWeightAttr) style.fontWeight = fontWeightAttr;
-
-        const textAnchorAttr = el.getAttribute('text-anchor');
-        if (textAnchorAttr) style.textAnchor = textAnchorAttr;
-
-        const rxAttr = el.getAttribute('rx');
-        if (rxAttr) style.rx = parseFloat(rxAttr);
-
-        const ryAttr = el.getAttribute('ry');
-        if (ryAttr) style.ry = parseFloat(ryAttr);
-
-        // Override with inline style attribute
-        const inlineStyle = el.getAttribute('style');
-        if (inlineStyle) {
-            const props = inlineStyle.split(';');
-            for (const prop of props) {
-                const [key, val] = prop.split(':').map(s => s.trim());
-                if (!key || !val) continue;
-                switch (key) {
-                    case 'fill': style.fill = val; break;
-                    case 'stroke': style.stroke = val; break;
-                    case 'stroke-width': style.strokeWidth = parseFloat(val); break;
-                    case 'stroke-dasharray': style.strokeDasharray = val; break;
-                    case 'opacity': style.opacity = parseFloat(val); break;
-                    case 'fill-opacity': style.fillOpacity = parseFloat(val); break;
-                    case 'font-size': style.fontSize = parseFloat(val); break;
-                    case 'font-family': style.fontFamily = val; break;
-                    case 'font-weight': style.fontWeight = val; break;
-                    case 'text-anchor': style.textAnchor = val; break;
+        const props = {};
+        for (let i = 0; i < chain.length; i++) {
+            const own = this._ownProps(chain[i]);
+            if (i === chain.length - 1) {
+                Object.assign(props, own);
+            } else {
+                for (const key of SvgParser.INHERITED_PROPS) {
+                    if (own[key] !== undefined) props[key] = own[key];
                 }
             }
         }
 
-        return style;
+        const num = (v, fallback) => {
+            const n = parseFloat(v);
+            return isNaN(n) ? fallback : n;
+        };
+        const dash = props['stroke-dasharray'];
+
+        return {
+            fill: props['fill'] !== undefined ? props['fill'] : 'none',
+            fillOpacity: num(props['fill-opacity'], 1),
+            stroke: props['stroke'] !== undefined ? props['stroke'] : 'none',
+            strokeWidth: num(props['stroke-width'], 1),
+            strokeDasharray: (dash && dash !== 'none') ? dash : null,
+            fontSize: num(props['font-size'], 14),
+            fontFamily: props['font-family'] || 'Calibri',
+            fontWeight: props['font-weight'] || 'normal',
+            // SVG default is "start" - "middle" silently re-centres every left-aligned label.
+            textAnchor: props['text-anchor'] || 'start',
+            opacity: num(props['opacity'], 1),
+            rx: num(props['rx'], 0),
+            ry: num(props['ry'], 0)
+        };
     }
 
     _combineTransform(parent, child) {
@@ -462,15 +524,8 @@ class SvgParser {
 
         if (!textContent) return;
 
-        // Read font styles from text element specifically
-        const fontSizeAttr = el.getAttribute('font-size');
-        if (fontSizeAttr) style.fontSize = parseFloat(fontSizeAttr);
-
-        const fontWeightAttr = el.getAttribute('font-weight');
-        if (fontWeightAttr) style.fontWeight = fontWeightAttr;
-
-        const fillAttr = el.getAttribute('fill');
-        if (fillAttr) style.textColor = fillAttr;
+        // Text is painted with `fill`; SVG's default text colour is black.
+        style.textColor = (style.fill && style.fill !== 'none') ? style.fill : '#000000';
 
         this.texts.push({
             x: pos.x,
@@ -638,39 +693,69 @@ class SvgParser {
         return points;
     }
 
+    /**
+     * A shape that fully encloses another shape is a grouping frame (subnet,
+     * VNet, legend box), not a labelled box. Such frames must not swallow the
+     * labels of the shapes inside them, and connectors must not glue to them.
+     */
+    _markContainers() {
+        for (const a of this.shapes) {
+            a.isContainer = false;
+            const areaA = a.width * a.height;
+            if (areaA <= 0) continue;
+            for (const b of this.shapes) {
+                if (b === a) continue;
+                const areaB = b.width * b.height;
+                if (areaB <= 0 || areaB >= areaA * 0.9) continue;
+                if (b.x >= a.x - 1 && b.y >= a.y - 1 &&
+                    b.x + b.width <= a.x + a.width + 1 &&
+                    b.y + b.height <= a.y + a.height + 1) {
+                    a.isContainer = true;
+                    break;
+                }
+            }
+        }
+    }
+
     _associateTextsWithShapes() {
-        // Try to associate each text with the nearest shape that contains it
+        const PAD = 2;
+        const assigned = new Map();
+
         for (const text of this.texts) {
-            let bestShape = null;
-            let bestDist = Infinity;
+            let best = null;
+            let bestArea = Infinity;
 
             for (const shape of this.shapes) {
-                const cx = shape.x + shape.width / 2;
-                const cy = shape.y + shape.height / 2;
+                if (shape.isContainer) continue;
 
-                // Check if text is inside or near the shape
-                const inside = text.x >= shape.x - 10 && text.x <= shape.x + shape.width + 10 &&
-                               text.y >= shape.y - 10 && text.y <= shape.y + shape.height + 10;
+                const inside = text.x >= shape.x - PAD && text.x <= shape.x + shape.width + PAD &&
+                               text.y >= shape.y - PAD && text.y <= shape.y + shape.height + PAD;
+                if (!inside) continue;
 
-                if (inside) {
-                    const dist = Math.hypot(text.x - cx, text.y - cy);
-                    if (dist < bestDist) {
-                        bestDist = dist;
-                        bestShape = shape;
-                    }
+                // Innermost (smallest) enclosing shape wins, not the nearest centre -
+                // otherwise a label lands in the big frame around its box.
+                const area = shape.width * shape.height;
+                if (area < bestArea) {
+                    bestArea = area;
+                    best = shape;
                 }
             }
 
-            if (bestShape) {
-                // Append text if shape already has text
-                if (bestShape.text) {
-                    bestShape.text += '\n' + text.text;
-                } else {
-                    bestShape.text = text.text;
-                }
-                bestShape.textStyle = text.style;
+            if (best) {
+                if (!assigned.has(best)) assigned.set(best, []);
+                assigned.get(best).push(text);
                 text._associated = true;
             }
+        }
+
+        for (const [shape, texts] of assigned) {
+            texts.sort((a, b) => (a.y - b.y) || (a.x - b.x));
+            shape.text = texts.map(t => t.text).join('\n');
+            // One run per source line so a heading keeps its own size/weight.
+            shape.textRuns = texts.map(t => ({ text: t.text, style: t.style }));
+            // The largest line drives the shape's overall font styling.
+            shape.textStyle = texts.reduce((a, b) =>
+                (b.style.fontSize || 0) > (a.style.fontSize || 0) ? b : a).style;
         }
 
         // Keep unassociated texts as standalone text shapes
@@ -691,11 +776,17 @@ class SvgParser {
     }
 
     _findNearestShape(point) {
+        const MAX_DIST = 30;
         let best = null;
-        let bestDist = 30; // Max distance threshold
+        let bestDist = MAX_DIST;
+        let bestArea = Infinity;
 
         for (let i = 0; i < this.shapes.length; i++) {
             const shape = this.shapes[i];
+            // Every point inside a frame has edge distance 0, so without this
+            // check all connectors would glue to the outermost frame.
+            if (shape.isContainer) continue;
+
             const cx = shape.x + shape.width / 2;
             const cy = shape.y + shape.height / 2;
 
@@ -703,9 +794,12 @@ class SvgParser {
             const dx = Math.max(0, Math.abs(point.x - cx) - shape.width / 2);
             const dy = Math.max(0, Math.abs(point.y - cy) - shape.height / 2);
             const dist = Math.hypot(dx, dy);
+            if (dist >= MAX_DIST) continue;
 
-            if (dist < bestDist) {
+            const area = shape.width * shape.height;
+            if (dist < bestDist - 0.5 || (Math.abs(dist - bestDist) <= 0.5 && area < bestArea)) {
                 bestDist = dist;
+                bestArea = area;
                 best = i;
             }
         }

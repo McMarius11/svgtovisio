@@ -72,6 +72,14 @@ class VsdxBuilder {
         return svgX * this.scale;
     }
 
+    // SVG text-anchor -> Visio HorzAlign (0 = left, 1 = centre, 2 = right)
+    _horzAlign(style) {
+        const anchor = (style && style.textAnchor) || 'start';
+        if (anchor === 'middle') return 1;
+        if (anchor === 'end') return 2;
+        return 0;
+    }
+
     _colorToRGB(color) {
         if (!color || color === 'none' || color === 'transparent') return null;
 
@@ -436,30 +444,61 @@ ${shapesXml}
                 sectionsXml += this._rectGeom(w, h, 0);
         }
 
-        // Text + character formatting
+        // Text: one character/paragraph run per source line, referenced from
+        // <Text> via <pp>/<cp>, so a heading and its detail lines keep their
+        // own size, weight, colour and alignment inside a single shape.
         if (shape.text) {
-            const textColor = (shape.textStyle && shape.textStyle.textColor) ?
-                this._colorToRGB(shape.textStyle.textColor) : '#000000';
-            const fontSize = ((shape.textStyle && shape.textStyle.fontSize) || 14) / 72;
-            const isBold = (shape.textStyle && shape.textStyle.fontWeight === 'bold');
+            const runs = (shape.textRuns && shape.textRuns.length)
+                ? shape.textRuns
+                : [{ text: shape.text, style: shape.textStyle || {} }];
+
+            const charKeys = [];
+            const paraKeys = [];
+            let charRows = '';
+            let paraRows = '';
+            const bodyLines = [];
+
+            for (const run of runs) {
+                const st = run.style || {};
+                const color = this._colorToRGB(st.textColor || st.fill) || '#000000';
+                const size = (st.fontSize || 14) / 72;
+                const bold = st.fontWeight === 'bold' ? '1' : '0';
+                const align = this._horzAlign(st);
+
+                const cKey = color + '|' + size + '|' + bold;
+                let cIx = charKeys.indexOf(cKey);
+                if (cIx === -1) {
+                    cIx = charKeys.push(cKey) - 1;
+                    charRows += `
+        <Row IX="${cIx}">
+          <Cell N="Font" V="1"/>
+          <Cell N="Color" V="${color}"/>
+          <Cell N="Size" V="${size}"/>
+          <Cell N="Style" V="${bold}"/>
+        </Row>`;
+                }
+
+                const pKey = String(align);
+                let pIx = paraKeys.indexOf(pKey);
+                if (pIx === -1) {
+                    pIx = paraKeys.push(pKey) - 1;
+                    paraRows += `
+        <Row IX="${pIx}">
+          <Cell N="HorzAlign" V="${align}"/>
+        </Row>`;
+                }
+
+                bodyLines.push(`<pp IX="${pIx}"/><cp IX="${cIx}"/>${this._xmlEscape(run.text)}`);
+            }
 
             sectionsXml += `
-      <Section N="Character">
-        <Row IX="0">
-          <Cell N="Font" V="1"/>
-          <Cell N="Color" V="${textColor || '#000000'}"/>
-          <Cell N="Size" V="${fontSize}"/>
-          <Cell N="Style" V="${isBold ? '1' : '0'}"/>
-        </Row>
+      <Section N="Character">${charRows}
       </Section>
-      <Section N="Paragraph">
-        <Row IX="0">
-          <Cell N="HorzAlign" V="1"/>
-        </Row>
+      <Section N="Paragraph">${paraRows}
       </Section>`;
 
             textXml = `
-      <Text>${this._xmlEscape(shape.text)}</Text>`;
+      <Text>${bodyLines.join('\n')}</Text>`;
         }
 
         return `    <Shape ID="${id}" Type="Shape" LineStyle="0" FillStyle="0" TextStyle="0">
@@ -564,13 +603,22 @@ ${cellsXml}${sectionsXml}${textXml}
     _buildTextShape(text) {
         const id = this._nextId();
 
-        // Estimate text size
+        // Estimate text size from the widest line, not the whole string
         const fontSize = (text.style.fontSize || 14);
-        const estWidth = Math.max(text.text.length * fontSize * 0.6 * this.scale, 1);
-        const estHeight = fontSize * 1.5 * this.scale;
+        const lines = text.text.split('\n');
+        const longest = lines.reduce((a, b) => (b.length > a.length ? b : a), '');
+        const estWidth = Math.max(longest.length * fontSize * 0.6 * this.scale, 1);
+        const estHeight = Math.max(lines.length, 1) * fontSize * 1.5 * this.scale;
 
         const pinX = this._svgToVisioX(text.x);
         const pinY = this._svgToVisioY(text.y);
+
+        // In SVG, x is the anchor point and y is the baseline. Visio positions a
+        // box by its local pin, so move the pin to match the anchor and lift the
+        // box off the baseline - otherwise every label drifts left and down.
+        const horzAlign = this._horzAlign(text.style);
+        const locPinX = horzAlign === 1 ? estWidth / 2 : (horzAlign === 2 ? estWidth : 0);
+        const locPinY = estHeight / 2 - 0.35 * fontSize * this.scale;
 
         const textColor = this._colorToRGB(text.style.textColor || text.style.fill) || '#000000';
         const fontSizeInches = fontSize / 72;
@@ -581,8 +629,8 @@ ${cellsXml}${sectionsXml}${textXml}
       <Cell N="PinY" V="${pinY}"/>
       <Cell N="Width" V="${estWidth}"/>
       <Cell N="Height" V="${estHeight}"/>
-      <Cell N="LocPinX" V="${estWidth / 2}"/>
-      <Cell N="LocPinY" V="${estHeight / 2}"/>
+      <Cell N="LocPinX" V="${locPinX}"/>
+      <Cell N="LocPinY" V="${locPinY}"/>
       <Cell N="Angle" V="0"/>
       <Cell N="FillPattern" V="0"/>
       <Cell N="LinePattern" V="0"/>
@@ -596,7 +644,7 @@ ${cellsXml}${sectionsXml}${textXml}
       </Section>
       <Section N="Paragraph">
         <Row IX="0">
-          <Cell N="HorzAlign" V="1"/>
+          <Cell N="HorzAlign" V="${horzAlign}"/>
         </Row>
       </Section>
       <Text>${this._xmlEscape(text.text)}</Text>

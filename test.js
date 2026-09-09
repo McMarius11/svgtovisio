@@ -169,6 +169,49 @@ assert(allLinked, 'All connectors should be linked to shapes');
 const haConn = bgpResult.connectors.find(c => c.points.length > 2);
 assert(haConn && haConn.points.length === 4, `HA connector should have 4 points (got ${haConn ? haConn.points.length : 0})`);
 
+// Test 7: CSS classes, <style> blocks, group transforms, nested frames
+console.log('\n--- Test 7: Class-styled SVG ---');
+const cssSvg = fs.readFileSync('./test-samples/css-classes.svg', 'utf8');
+const result7 = new SvgParser(cssSvg).parse();
+
+const frame = result7.shapes.find(s => s.width === 500);
+const nodeA = result7.shapes.find(s => s.x === 80);
+const nodeB = result7.shapes.find(s => s.x === 340);
+
+assert(nodeA && nodeA.style.fill === '#FFFFFF', `.box fill from <style> (got ${nodeA && nodeA.style.fill})`);
+assert(nodeA && nodeA.style.stroke === '#333333', `.box stroke from <style> (got ${nodeA && nodeA.style.stroke})`);
+assert(nodeA && nodeA.style.strokeWidth === 1.5, `.box stroke-width from <style> (got ${nodeA && nodeA.style.strokeWidth})`);
+assert(frame && frame.style.strokeDasharray === '8 5', 'frame keeps its dash pattern');
+assert(frame && frame.isContainer === true, 'enclosing rect is detected as a container');
+assert(frame && !frame.text, `container must not swallow inner labels (got ${JSON.stringify(frame && frame.text)})`);
+assert(nodeA && nodeA.text === 'Node A\ndetail line', `inner box keeps both its lines (got ${JSON.stringify(nodeA && nodeA.text)})`);
+assert(nodeA && nodeA.textRuns && nodeA.textRuns.length === 2, 'inner box keeps one style run per line');
+assert(nodeA && nodeA.textRuns[0].style.fontSize === 18 && nodeA.textRuns[1].style.fontSize === 11,
+    'heading and detail line keep their own font sizes');
+assert(nodeA && nodeA.y === 150, `group transform is applied (got y=${nodeA && nodeA.y})`);
+
+const title = result7.texts.find(t => t.text.indexOf('Title') === 0);
+assert(title && title.style.textAnchor === 'start', `text-anchor defaults to start (got ${title && title.style.textAnchor})`);
+assert(title && title.style.textColor === '#009640', `text colour comes from the class (got ${title && title.style.textColor})`);
+assert(title && title.style.fontSize === 18, `class font-size applies (got ${title && title.style.fontSize})`);
+
+const link = result7.connectors.find(c => c.hasArrow);
+assert(link && link.style.stroke === '#009640', `connector stroke from class (got ${link && link.style.stroke})`);
+const aIdx = result7.shapes.indexOf(nodeA), bIdx = result7.shapes.indexOf(nodeB);
+assert(link && link.fromShape === aIdx && link.toShape === bIdx,
+    `connector glues to the inner boxes, not the frame (got ${link && link.fromShape}->${link && link.toShape})`);
+
+// Test 8: the styles survive into the VSDX page
+console.log('\n--- Test 8: VSDX output ---');
+const VsdxBuilder = new Function(fs.readFileSync('./vsdx-builder.js', 'utf8') + '\nreturn VsdxBuilder;')();
+const pageXml = new VsdxBuilder(result7)._page1();
+
+assert(pageXml.indexOf('N="FillForegnd" V="#FFFFFF"') !== -1, 'fill colour reaches the VSDX');
+assert(pageXml.indexOf('N="LineColor" V="#333333"') !== -1, 'stroke colour reaches the VSDX');
+assert(pageXml.indexOf('N="LineColor" V="#009640"') !== -1, 'connector colour reaches the VSDX');
+assert((pageXml.match(/<cp IX=/g) || []).length >= 2, 'per-line character runs are emitted');
+assert(pageXml.indexOf('N="HorzAlign" V="0"') !== -1, 'left-aligned text is not force-centred');
+
 // Summary
 console.log(`\n=== Results: ${passed} passed, ${failed} failed ===`);
 process.exit(failed > 0 ? 1 : 0);
