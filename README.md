@@ -39,6 +39,70 @@ The converter reports these in the preview rather than dropping them silently:
 - `clip-path`, `mask` and `filter` are ignored — shapes are converted unclipped
 - gradients and patterns become a flat colour
 
+## How it works
+
+The pipeline is `parse -> scene -> build`, and the scene model is the contract
+between the stages:
+
+```
+ .svg  ->  SvgParser     \
+                          >  Scene  ->  SceneLayout  ->  VsdxBuilder  ->  .vsdx
+ .drawio -> DrawioParser /
+```
+
+| File | Role | Needs a DOM |
+|------|------|-------------|
+| `scene-model.js` | The contract: JSDoc types, `normalise()`, `validate()` | no |
+| `svg-transform.js` | Affine transform maths | no |
+| `svg-style.js` | The CSS cascade, inheritance and paint servers | yes |
+| `svg-parser.js` | Walks the SVG DOM and produces a scene | yes |
+| `drawio-parser.js` | Walks the Draw.io model and produces a scene | yes |
+| `scene-layout.js` | Frame detection, label assignment, connector gluing | no |
+| `vsdx-builder.js` | Scene to an OPC package | no |
+| `app.js` | Browser UI | yes |
+
+Two rules keep this honest:
+
+- **Both parsers must produce the same scene.** `SceneModel.validate()` runs
+  over every sample in the golden-file tests, so a parser that drifts from the
+  contract fails loudly instead of producing a subtly wrong `.vsdx`.
+- **`SceneLayout` fills gaps, it never overwrites.** Draw.io knows its own edge
+  endpoints and labels exactly; guessing geometrically would be strictly worse.
+  The layout stage only derives what a parser left as `null`.
+
+Every layout threshold lives in `SceneLayout.TUNING`. When a drawing converts
+badly, that is the first place to look.
+
+## Development
+
+```bash
+npm ci
+npm run check        # lint + type-check + both test suites
+npm test             # unit/integration tests and golden-file snapshots
+npm run preview -- diagram.svg out.svg   # render what Visio will show
+node build.js        # regenerate dist/index.html
+```
+
+There is no bundler and no transpiler: the browser loads the sources directly,
+and `build.js` inlines them into a single self-contained `dist/index.html`.
+TypeScript is used as a **checker only** (`npm run typecheck`) — the types live
+in JSDoc comments, so the files stay plain JavaScript.
+
+### Tests
+
+- `test.js` — unit and integration tests, including building a real `.vsdx`
+  and validating every XML part in the package.
+- `test-golden.js` — snapshots the parsed scene of every sample under
+  `test-samples/` into `test-golden/`. Any change to a parser or a heuristic
+  shows up as a reviewable diff:
+
+  ```bash
+  UPDATE_GOLDEN=1 npm run test:golden   # after an intended change
+  ```
+
+`tools/preview.js` renders the generated Visio page back to SVG, which is the
+only way to see what Visio will draw without owning Visio.
+
 ## Run locally
 
 ```bash

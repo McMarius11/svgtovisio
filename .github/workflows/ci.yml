@@ -18,8 +18,17 @@ jobs:
 
       - run: npm ci
 
-      - name: Run tests
-        run: npm test
+      - name: Lint
+        run: npm run lint
+
+      - name: Type-check (JSDoc types, no build step)
+        run: npm run typecheck
+
+      - name: Unit and integration tests
+        run: npm run test:unit
+
+      - name: Golden-file snapshots
+        run: npm run test:golden
 
       - name: Check dist/index.html is up to date
         run: |

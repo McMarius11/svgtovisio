@@ -1,3 +1,5 @@
+// @ts-check
+/* global SvgParser, DrawioParser, VsdxBuilder */
 /**
  * App - Ties together the UI, SVG parser, and VSDX builder.
  */
@@ -5,9 +7,9 @@
 (function () {
     const dropZone = document.getElementById('dropZone');
     const browseBtn = document.getElementById('browseBtn');
-    const fileInput = document.getElementById('fileInput');
-    const svgInput = document.getElementById('svgInput');
-    const convertBtn = document.getElementById('convertBtn');
+    const fileInput = /** @type {HTMLInputElement} */ (document.getElementById('fileInput'));
+    const svgInput = /** @type {HTMLTextAreaElement} */ (document.getElementById('svgInput'));
+    const convertBtn = /** @type {HTMLButtonElement} */ (document.getElementById('convertBtn'));
     const statusText = document.getElementById('statusText');
     const logEl = document.getElementById('log');
     const previewSection = document.getElementById('previewSection');
@@ -80,8 +82,9 @@
         }
 
         const reader = new FileReader();
-        reader.onload = (e) => {
-            const content = e.target.result;
+        reader.onload = () => {
+            // readAsText always yields a string; narrow it for the checker
+            const content = String(reader.result);
             currentInput = content;
             svgInput.value = content;
 
@@ -117,7 +120,8 @@
                 const probe = new SvgParser(svgString);
                 probe.parse();
                 showWarnings(probe.warnings);
-            } catch (e) {
+            } catch {
+                // An unparseable preview is not fatal; the convert step reports it
                 showWarnings([]);
             }
         } else {
@@ -193,7 +197,7 @@
                     const fw = (s.textStyle && s.textStyle.fontWeight) || 'normal';
                     const vAlign = s.verticalAlign || 'middle';
 
-                    let tx = s.x + s.width / 2;
+                    const tx = s.x + s.width / 2;
                     let ty, baseline;
                     if (vAlign === 'top') {
                         ty = s.y + fs + 4;
@@ -216,7 +220,7 @@
                 svg += `<path d="${d}" fill="none" stroke="${stroke}" stroke-width="${sw}"${dash}/>`;
 
                 // Draw arrowhead
-                if (c.hasArrow && c.points.length >= 2) {
+                if (c.arrowEnd && c.points.length >= 2) {
                     const last = c.points[c.points.length - 1];
                     const prev = c.points[c.points.length - 2];
                     const angle = Math.atan2(last.y - prev.y, last.x - prev.x);

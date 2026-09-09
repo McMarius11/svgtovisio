@@ -215,21 +215,619 @@ https://github.com/nodeca/pako/blob/main/LICENSE
 
     <input type="file" id="fileInput" accept=".svg,.drawio,.xml,image/svg+xml">
 
-    <script>/* svg-parser.js */
+    <!-- Load order matters: these are plain scripts, not modules. -->
+    <script>/* scene-model.js */
+// @ts-check
 /**
- * SVG Parser - Extracts shapes, connectors, and text from Claude-generated SVGs.
+ * The scene model - the contract between every parser and the builder.
  *
- * Claude typically generates SVGs with:
- * - <rect> for boxes/cards
- * - <circle>, <ellipse> for circles
- * - <line>, <polyline>, <path> for arrows/connectors
- * - <polygon> for diamonds/triangles
- * - <text> for labels
- * - <marker> definitions for arrowheads
- * - <g> groups combining shapes with their labels
+ * Both SvgParser and DrawioParser must produce exactly this shape, and
+ * VsdxBuilder may rely on it without defensive fallbacks. Until this file
+ * existed the two parsers emitted different fields and the builder guessed
+ * which one it was handed.
+ *
+ * Coordinates are SVG user units (pixels, y growing downwards). Conversion to
+ * Visio inches happens in the builder and nowhere else.
  */
 
-class SvgParser {
+/**
+ * @typedef {Object} Style
+ * @property {string}  fill             CSS colour, or 'none'
+ * @property {number}  fillOpacity      0..1
+ * @property {string}  stroke           CSS colour, or 'none'
+ * @property {number}  strokeWidth      user units
+ * @property {number}  strokeOpacity    0..1
+ * @property {string|null} strokeDasharray  raw dash array, or null when solid
+ * @property {number}  fontSize         user units
+ * @property {string}  fontFamily
+ * @property {string}  fontWeight       'normal' | 'bold' | numeric string
+ * @property {'start'|'middle'|'end'} textAnchor
+ * @property {number}  opacity          0..1
+ * @property {number}  rx               corner radius
+ * @property {number}  ry
+ * @property {string} [textColor]       resolved text colour (text nodes only)
+ */
+
+/**
+ * @typedef {Object} Point
+ * @property {number} x
+ * @property {number} y
+ */
+
+/**
+ * @typedef {Object} TextRun
+ * @property {string} text
+ * @property {Style}  style
+ */
+
+/**
+ * @typedef {Object} Shape
+ * @property {'rect'|'circle'|'ellipse'|'diamond'|'polygon'|'path-shape'} type
+ * @property {number} x                 left edge of the unrotated box
+ * @property {number} y                 top edge of the unrotated box
+ * @property {number} width
+ * @property {number} height
+ * @property {number} angle             radians, counter-clockwise, about the centre
+ * @property {Style}  style
+ * @property {string|null} id
+ * @property {string|null} text         all runs joined with '\n', or null
+ * @property {TextRun[]}   textRuns     one entry per source line
+ * @property {Style|null}  textStyle    dominant run's style
+ * @property {boolean} isContainer      encloses other shapes; never labelled or glued to
+ * @property {Point[]} [points]         polygon / path outline
+ * @property {string}  [d]              original path data
+ */
+
+/**
+ * @typedef {Object} Connector
+ * @property {'line'|'polyline'|'path'} type
+ * @property {Point[]} points           at least two
+ * @property {boolean} arrowStart
+ * @property {boolean} arrowEnd
+ * @property {Style}   style
+ * @property {string|null} id
+ * @property {string|null} text
+ * @property {number|null} fromShape    index into Scene.shapes
+ * @property {number|null} toShape
+ * @property {string} [d]
+ */
+
+/**
+ * @typedef {Object} StandaloneText
+ * @property {number} x                 anchor point
+ * @property {number} y                 baseline
+ * @property {string} text
+ * @property {Style}  style
+ * @property {string|null} id
+ * @property {boolean} standalone  the parser already decided this text is
+ *                                 free-floating; the layout stage must not
+ *                                 fold it into a shape
+ */
+
+/**
+ * @typedef {Object} ViewBox
+ * @property {number} x
+ * @property {number} y
+ * @property {number} width
+ * @property {number} height
+ */
+
+/**
+ * @typedef {Object} Scene
+ * @property {ViewBox}  viewBox
+ * @property {Shape[]}  shapes
+ * @property {Connector[]} connectors
+ * @property {StandaloneText[]} texts
+ * @property {string[]} warnings        things the .vsdx cannot reproduce
+ */
+
+const SceneModel = {
+    SHAPE_TYPES: Object.freeze(['rect', 'circle', 'ellipse', 'diamond', 'polygon', 'path-shape']),
+    CONNECTOR_TYPES: Object.freeze(['line', 'polyline', 'path']),
+    TEXT_ANCHORS: Object.freeze(['start', 'middle', 'end']),
+
+    /**
+     * A style with every field populated. Parsers start from this so no
+     * consumer ever has to test a field for undefined.
+     * @returns {Style}
+     */
+    defaultStyle() {
+        return {
+            fill: 'none',
+            fillOpacity: 1,
+            stroke: 'none',
+            strokeWidth: 1,
+            strokeOpacity: 1,
+            strokeDasharray: null,
+            fontSize: 14,
+            fontFamily: 'Calibri',
+            fontWeight: 'normal',
+            textAnchor: 'start',
+            opacity: 1,
+            rx: 0,
+            ry: 0
+        };
+    },
+
+    /**
+     * Fill in whatever a parser left out, so the model is complete before it
+     * reaches the layout stage or the builder.
+     * @param {any} scene
+     * @returns {Scene}
+     */
+    normalise(scene) {
+        const vb = scene.viewBox || {};
+        scene.viewBox = {
+            x: vb.x || 0,
+            y: vb.y || 0,
+            width: vb.width || 800,
+            height: vb.height || 600
+        };
+        scene.shapes = scene.shapes || [];
+        scene.connectors = scene.connectors || [];
+        scene.texts = scene.texts || [];
+        scene.warnings = scene.warnings || [];
+
+        for (const shape of scene.shapes) {
+            shape.style = Object.assign(this.defaultStyle(), shape.style);
+            if (shape.id === undefined) shape.id = null;
+            if (shape.angle === undefined) shape.angle = 0;
+            if (shape.text === undefined) shape.text = null;
+            if (shape.isContainer === undefined) shape.isContainer = false;
+            if (shape.textStyle === undefined) shape.textStyle = null;
+            if (!shape.textRuns) {
+                shape.textRuns = shape.text
+                    ? [{ text: shape.text, style: shape.textStyle || shape.style }]
+                    : [];
+            }
+        }
+
+        for (const conn of scene.connectors) {
+            conn.style = Object.assign(this.defaultStyle(), conn.style);
+            if (conn.id === undefined) conn.id = null;
+            if (conn.text === undefined) conn.text = null;
+            if (conn.fromShape === undefined) conn.fromShape = null;
+            if (conn.toShape === undefined) conn.toShape = null;
+            // Legacy scenes that only say "there is an arrow" mean the end
+            if (conn.arrowEnd === undefined) conn.arrowEnd = !!conn.hasArrow;
+            if (conn.arrowStart === undefined) conn.arrowStart = false;
+        }
+
+        for (const text of scene.texts) {
+            text.style = Object.assign(this.defaultStyle(), text.style);
+            if (text.id === undefined) text.id = null;
+            if (text.standalone === undefined) text.standalone = false;
+        }
+
+        return scene;
+    },
+
+    /**
+     * Structural check used by the tests. Returns the problems found so a
+     * parser that drifts from the contract fails loudly instead of producing
+     * a subtly wrong .vsdx.
+     * @param {any} scene
+     * @returns {string[]}
+     */
+    validate(scene) {
+        const problems = [];
+        const num = (v) => typeof v === 'number' && isFinite(v);
+
+        if (!scene || typeof scene !== 'object') return ['scene is not an object'];
+
+        for (const key of ['viewBox', 'shapes', 'connectors', 'texts', 'warnings']) {
+            if (scene[key] === undefined) problems.push(`scene.${key} is missing`);
+        }
+        if (problems.length) return problems;
+
+        for (const key of ['x', 'y', 'width', 'height']) {
+            if (!num(scene.viewBox[key])) problems.push(`viewBox.${key} is not a number`);
+        }
+
+        const checkStyle = (style, where) => {
+            if (!style) { problems.push(`${where}.style is missing`); return; }
+            for (const key of ['fill', 'stroke', 'fontFamily', 'fontWeight', 'textAnchor']) {
+                if (typeof style[key] !== 'string') problems.push(`${where}.style.${key} is not a string`);
+            }
+            for (const key of ['fillOpacity', 'strokeWidth', 'strokeOpacity', 'fontSize', 'opacity', 'rx', 'ry']) {
+                if (!num(style[key])) problems.push(`${where}.style.${key} is not a number`);
+            }
+            if (this.TEXT_ANCHORS.indexOf(style.textAnchor) === -1) {
+                problems.push(`${where}.style.textAnchor is "${style.textAnchor}"`);
+            }
+        };
+
+        scene.shapes.forEach((shape, i) => {
+            const where = `shapes[${i}]`;
+            if (this.SHAPE_TYPES.indexOf(shape.type) === -1) problems.push(`${where}.type is "${shape.type}"`);
+            for (const key of ['x', 'y', 'width', 'height', 'angle']) {
+                if (!num(shape[key])) problems.push(`${where}.${key} is not a number`);
+            }
+            if (typeof shape.isContainer !== 'boolean') problems.push(`${where}.isContainer is not a boolean`);
+            if (!Array.isArray(shape.textRuns)) problems.push(`${where}.textRuns is not an array`);
+            if (shape.text !== null && typeof shape.text !== 'string') problems.push(`${where}.text is neither string nor null`);
+            checkStyle(shape.style, where);
+        });
+
+        scene.connectors.forEach((conn, i) => {
+            const where = `connectors[${i}]`;
+            if (this.CONNECTOR_TYPES.indexOf(conn.type) === -1) problems.push(`${where}.type is "${conn.type}"`);
+            if (!Array.isArray(conn.points) || conn.points.length < 2) {
+                problems.push(`${where}.points has fewer than 2 entries`);
+            } else {
+                conn.points.forEach((p, j) => {
+                    if (!num(p.x) || !num(p.y)) problems.push(`${where}.points[${j}] is not a point`);
+                });
+            }
+            for (const key of ['arrowStart', 'arrowEnd']) {
+                if (typeof conn[key] !== 'boolean') problems.push(`${where}.${key} is not a boolean`);
+            }
+            for (const key of ['fromShape', 'toShape']) {
+                const v = conn[key];
+                if (v !== null && !(Number.isInteger(v) && v >= 0 && v < scene.shapes.length)) {
+                    problems.push(`${where}.${key} is not null or a valid shape index`);
+                }
+            }
+            checkStyle(conn.style, where);
+        });
+
+        scene.texts.forEach((text, i) => {
+            const where = `texts[${i}]`;
+            if (!num(text.x) || !num(text.y)) problems.push(`${where} has no numeric position`);
+            if (typeof text.text !== 'string') problems.push(`${where}.text is not a string`);
+            if (typeof text.standalone !== 'boolean') problems.push(`${where}.standalone is not a boolean`);
+            checkStyle(text.style, where);
+        });
+
+        return problems;
+    }
+};
+
+</script>
+    <script>/* scene-layout.js */
+// @ts-check
+/**
+ * Layout heuristics, applied to the scene model after parsing.
+ *
+ * These decide which shapes are grouping frames, which label belongs to which
+ * box, and which shapes a connector is glued to. They live here rather than in
+ * a parser because they are not SVG-specific: a Draw.io drawing with nested
+ * containers must behave the same way as the equivalent SVG. Previously they
+ * only ran for SVG input.
+ *
+ * Every threshold is in TUNING. When a drawing converts badly, this is the
+ * first place to look.
+ */
+
+const SceneLayout = {
+    TUNING: Object.freeze({
+        /**
+         * A shape counts as a frame only if the shape it encloses is
+         * meaningfully smaller. Without the margin, two rectangles of nearly
+         * identical size would each call the other a container.
+         */
+        containerAreaRatio: 0.9,
+
+        /**
+         * Slack, in user units, when testing whether a label sits inside a
+         * box. Generous padding lets a caption next to a small swatch get
+         * swallowed by it, so keep this tight.
+         */
+        labelPadding: 2,
+
+        /**
+         * The connector glue radius is this fraction of the drawing's
+         * diagonal, clamped below. A fixed radius is far too coarse on a small
+         * drawing and far too tight on a large one.
+         */
+        glueRadiusFraction: 0.015,
+        glueRadiusMin: 8,
+        glueRadiusMax: 48
+    }),
+
+    /**
+     * Run every heuristic over a scene, in order. Containers must be known
+     * before labels are assigned, and labels before connectors are glued.
+     * @param {any} scene
+     * @param {any} [tuning]
+     */
+    apply(scene, tuning) {
+        const t = tuning || this.TUNING;
+        this.markContainers(scene, t);
+        this.associateTexts(scene, t);
+        this.glueConnectors(scene, t);
+        return scene;
+    },
+
+    /** Glue radius for a drawing of this size, in user units. */
+    glueRadius(scene, tuning) {
+        const diagonal = Math.hypot(scene.viewBox.width, scene.viewBox.height);
+        return Math.max(tuning.glueRadiusMin,
+                        Math.min(tuning.glueRadiusMax, diagonal * tuning.glueRadiusFraction));
+    },
+
+    /**
+     * A shape that fully encloses another shape is a grouping frame (subnet,
+     * VNet, legend box), not a labelled box. Such frames must not swallow the
+     * labels of the shapes inside them, and connectors must not glue to them.
+     */
+    markContainers(scene, tuning) {
+        for (const a of scene.shapes) {
+            a.isContainer = false;
+            const areaA = a.width * a.height;
+            if (areaA <= 0) continue;
+            for (const b of scene.shapes) {
+                if (b === a) continue;
+                const areaB = b.width * b.height;
+                if (areaB <= 0 || areaB >= areaA * tuning.containerAreaRatio) continue;
+                if (b.x >= a.x - 1 && b.y >= a.y - 1 &&
+                    b.x + b.width <= a.x + a.width + 1 &&
+                    b.y + b.height <= a.y + a.height + 1) {
+                    a.isContainer = true;
+                    break;
+                }
+            }
+        }
+    },
+
+    associateTexts(scene, tuning) {
+        const PAD = tuning.labelPadding;
+        const assigned = new Map();
+
+        for (const text of scene.texts) {
+            // A parser that already classified this text keeps the last word
+            if (text.standalone) continue;
+
+            let best = null;
+            let bestArea = Infinity;
+
+            for (const shape of scene.shapes) {
+                if (shape.isContainer) continue;
+
+                const inside = text.x >= shape.x - PAD && text.x <= shape.x + shape.width + PAD &&
+                               text.y >= shape.y - PAD && text.y <= shape.y + shape.height + PAD;
+                if (!inside) continue;
+
+                // Innermost (smallest) enclosing shape wins, not the nearest centre -
+                // otherwise a label lands in the big frame around its box.
+                const area = shape.width * shape.height;
+                if (area < bestArea) {
+                    bestArea = area;
+                    best = shape;
+                }
+            }
+
+            if (best) {
+                if (!assigned.has(best)) assigned.set(best, []);
+                assigned.get(best).push(text);
+                text._associated = true;
+            }
+        }
+
+        for (const [shape, texts] of assigned) {
+            texts.sort((a, b) => (a.y - b.y) || (a.x - b.x));
+            shape.text = texts.map(t => t.text).join('\n');
+            // One run per source line so a heading keeps its own size/weight.
+            shape.textRuns = texts.map(t => ({ text: t.text, style: t.style }));
+            // The largest line drives the shape's overall font styling.
+            shape.textStyle = texts.reduce((a, b) =>
+                (b.style.fontSize || 0) > (a.style.fontSize || 0) ? b : a).style;
+        }
+
+        // Keep unassociated texts as standalone text shapes
+        scene.texts = scene.texts.filter(t => !t._associated);
+    },
+
+    glueConnectors(scene, tuning) {
+        // A fixed 30px radius is far too coarse on a small drawing and far too
+        // tight on a large one, so scale it with the diagram's diagonal.
+        // Try to detect which shapes connectors connect to
+        for (const conn of scene.connectors) {
+            if (conn.points.length < 2) continue;
+
+            // Only derive an endpoint the parser could not supply itself.
+            // Draw.io knows its edges' source and target exactly; guessing
+            // geometrically would be strictly worse.
+            if (conn.fromShape === null) {
+                conn.fromShape = this.findNearestShape(scene, tuning, conn.points[0]);
+            }
+            if (conn.toShape === null) {
+                conn.toShape = this.findNearestShape(scene, tuning, conn.points[conn.points.length - 1]);
+            }
+        }
+    },
+
+    findNearestShape(scene, tuning, point) {
+        const MAX_DIST = this.glueRadius(scene, tuning);
+        let best = null;
+        let bestDist = MAX_DIST;
+        let bestArea = Infinity;
+
+        for (let i = 0; i < scene.shapes.length; i++) {
+            const shape = scene.shapes[i];
+            // Every point inside a frame has edge distance 0, so without this
+            // check all connectors would glue to the outermost frame.
+            if (shape.isContainer) continue;
+
+            const cx = shape.x + shape.width / 2;
+            const cy = shape.y + shape.height / 2;
+
+            // Distance to shape edge
+            const dx = Math.max(0, Math.abs(point.x - cx) - shape.width / 2);
+            const dy = Math.max(0, Math.abs(point.y - cy) - shape.height / 2);
+            const dist = Math.hypot(dx, dy);
+            if (dist >= MAX_DIST) continue;
+
+            const area = shape.width * shape.height;
+            if (dist < bestDist - 0.5 || (Math.abs(dist - bestDist) <= 0.5 && area < bestArea)) {
+                bestDist = dist;
+                bestArea = area;
+                best = i;
+            }
+        }
+
+        return best;
+    }
+};
+
+</script>
+    <script>/* svg-transform.js */
+// @ts-check
+/**
+ * Affine transform maths, free of any DOM or parser state.
+ *
+ * Transforms are matrices {a,b,c,d,e,f}:
+ *   x' = a*x + c*y + e
+ *   y' = b*x + d*y + f
+ *
+ * They used to be carried as concatenated attribute strings, so only the
+ * outermost translate of a nested group ever applied and scale, rotate, skew
+ * and matrix were dropped entirely.
+ *
+ * @typedef {{a:number,b:number,c:number,d:number,e:number,f:number}} Matrix
+ */
+
+const SvgTransform = {
+    /** @type {Matrix} */
+    IDENTITY: Object.freeze({ a: 1, b: 0, c: 0, d: 1, e: 0, f: 0 }),
+
+
+    multiply(m1, m2) {
+        return {
+            a: m1.a * m2.a + m1.c * m2.b,
+            b: m1.b * m2.a + m1.d * m2.b,
+            c: m1.a * m2.c + m1.c * m2.d,
+            d: m1.b * m2.c + m1.d * m2.d,
+            e: m1.a * m2.e + m1.c * m2.f + m1.e,
+            f: m1.b * m2.e + m1.d * m2.f + m1.f
+        };
+    },
+
+    /** Parse a transform attribute (any number of chained functions). */
+    parseAttr(str, warn) {
+        if (!str) return null;
+        let m = null;
+        const fnRe = /([a-zA-Z]+)\s*\(([^)]*)\)/g;
+        let match;
+        while ((match = fnRe.exec(str)) !== null) {
+            const name = match[1].toLowerCase();
+            const args = match[2].trim().split(/[\s,]+/).map(parseFloat).filter(n => !isNaN(n));
+            const step = this.functionToMatrix(name, args);
+            if (!step) {
+                if (warn) warn(`transform "${name}()" is not supported and was ignored`);
+                continue;
+            }
+            m = m ? this.multiply(m, step) : step;
+        }
+        return m;
+    },
+
+    functionToMatrix(name, a) {
+        const rad = deg => deg * Math.PI / 180;
+        switch (name) {
+            case 'translate':
+                return { a: 1, b: 0, c: 0, d: 1, e: a[0] || 0, f: a[1] || 0 };
+            case 'scale': {
+                const sx = a[0] !== undefined ? a[0] : 1;
+                const sy = a[1] !== undefined ? a[1] : sx;
+                return { a: sx, b: 0, c: 0, d: sy, e: 0, f: 0 };
+            }
+            case 'rotate': {
+                const t = rad(a[0] || 0);
+                const cos = Math.cos(t), sin = Math.sin(t);
+                const rot = { a: cos, b: sin, c: -sin, d: cos, e: 0, f: 0 };
+                if (a.length < 3) return rot;
+                // rotate(angle cx cy) == translate(cx,cy) rotate(angle) translate(-cx,-cy)
+                const to = { a: 1, b: 0, c: 0, d: 1, e: a[1], f: a[2] };
+                const back = { a: 1, b: 0, c: 0, d: 1, e: -a[1], f: -a[2] };
+                return this.multiply(this.multiply(to, rot), back);
+            }
+            case 'skewx':
+                return { a: 1, b: 0, c: Math.tan(rad(a[0] || 0)), d: 1, e: 0, f: 0 };
+            case 'skewy':
+                return { a: 1, b: Math.tan(rad(a[0] || 0)), c: 0, d: 1, e: 0, f: 0 };
+            case 'matrix':
+                if (a.length < 6) return null;
+                return { a: a[0], b: a[1], c: a[2], d: a[3], e: a[4], f: a[5] };
+            default:
+                return null;
+        }
+    },
+
+    combine(parent, child, warn) {
+        const childMatrix = typeof child === 'string' ? this.parseAttr(child, warn) : child;
+        if (!parent) return childMatrix || null;
+        if (!childMatrix) return parent;
+        return this.multiply(parent, childMatrix);
+    },
+
+    apply(x, y, m) {
+        if (!m) return { x, y };
+        return {
+            x: m.a * x + m.c * y + m.e,
+            y: m.b * x + m.d * y + m.f
+        };
+    },
+
+    /** Uniform scale factor of a matrix (used for stroke widths and font sizes). */
+    scaleOf(m) {
+        if (!m) return 1;
+        const det = Math.abs(m.a * m.d - m.b * m.c);
+        return det > 0 ? Math.sqrt(det) : 1;
+    },
+
+    /**
+     * Map an axis-aligned box through a matrix. Pure translate/scale keeps it
+     * axis aligned; a rotation is reported separately so Visio can spin the
+     * shape via its Angle cell instead of distorting the geometry.
+     */
+    rect(x, y, w, h, m) {
+        if (!m) return { x, y, width: w, height: h, angle: 0 };
+
+        const centre = this.apply(x + w / 2, y + h / 2, m);
+        const sx = Math.hypot(m.a, m.b);
+        const sy = Math.hypot(m.c, m.d);
+        const width = w * sx;
+        const height = h * sy;
+        // SVG rotates clockwise (y grows downwards), Visio counter-clockwise.
+        const angle = -Math.atan2(m.b, m.a);
+
+        return {
+            x: centre.x - width / 2,
+            y: centre.y - height / 2,
+            width,
+            height,
+            angle: Math.abs(angle) < 1e-9 ? 0 : angle
+        };
+    },
+
+    /** Stroke widths and font sizes scale with the transform. */
+    scaleStyle(style, m) {
+        const s = this.scaleOf(m);
+        if (s === 1) return style;
+        return Object.assign({}, style, {
+            strokeWidth: style.strokeWidth * s,
+            fontSize: style.fontSize * s,
+            rx: style.rx * s,
+            ry: style.ry * s
+        });
+    }
+};
+
+</script>
+    <script>/* svg-style.js */
+// @ts-check
+/* global SceneModel */
+/**
+ * The SVG style cascade: presentation attributes, <style> rules and inline
+ * styles, plus inheritance down the element tree and paint-server resolution.
+ *
+ * Kept apart from the DOM walk because this is where class-styled diagrams
+ * used to lose every fill, stroke and font: only attributes and inline styles
+ * were read, so `class="box"` resolved to nothing.
+ */
+
+class SvgStyleResolver {
     /**
      * Presentation attributes that also exist as CSS properties.
      * These form the lowest layer of the cascade (specificity 0).
@@ -249,6 +847,265 @@ class SvgParser {
         'visibility'
     ]);
 
+    /**
+     * @param {Element} svgEl   the root <svg>
+     * @param {(msg: string) => void} warn  conversion-caveat sink
+     */
+    constructor(svgEl, warn) {
+        this.svgEl = svgEl;
+        this.warn = warn || function () {};
+        this.cssRules = [];
+        /** @type {Object<string, Element>} */
+        this.gradients = {};
+        // resolve() walks the ancestor chain of every element, so the same
+        // ancestors get resolved over and over; cache both layers.
+        this._ownPropsCache = new Map();
+        this._ruleCache = new Map();
+
+        this.parseStyleSheet();
+        this.svgEl.querySelectorAll('linearGradient, radialGradient').forEach((g) => {
+            if (g.id) this.gradients[g.id] = g;
+        });
+    }
+
+    /** Colour of a gradient stop, from either the attribute or its style. */
+    stopColor(stop) {
+        if (!stop) return null;
+        const inline = stop.getAttribute('style');
+        if (inline) {
+            const decls = this.parseDeclarations(inline);
+            if (decls['stop-color']) return decls['stop-color'];
+        }
+        const own = this.ownProps(stop);
+        return stop.getAttribute('stop-color') || own['stop-color'] || null;
+    }
+
+    /**
+     * Visio has no gradient fill here, so a gradient is flattened to the blend
+     * of its first and last stop - far closer than the previous fallback,
+     * which turned every gradient into solid black.
+     */
+    resolveGradient(id) {
+        let g = this.gradients[id];
+        if (!g) return null;
+
+        // A gradient may inherit its stops from another one via href
+        let stops = g.querySelectorAll('stop');
+        let guard = 0;
+        while (stops.length === 0 && guard++ < 8) {
+            const href = g.getAttribute('href') || g.getAttribute('xlink:href');
+            if (!href || href[0] !== '#') break;
+            g = this.gradients[href.slice(1)];
+            if (!g) break;
+            stops = g.querySelectorAll('stop');
+        }
+        if (stops.length === 0) return null;
+
+        const first = this.stopColor(stops[0]);
+        const last = this.stopColor(stops[stops.length - 1]);
+        if (!first) return null;
+        if (!last || last === first) return first;
+
+        const mix = this.blend(first, last);
+        return mix || first;
+    }
+
+    /** Average two colours; returns null when either cannot be read as hex. */
+    blend(c1, c2) {
+        const toRgb = c => {
+            const m = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(c.trim());
+            if (!m) return null;
+            let h = m[1];
+            if (h.length === 3) h = h[0] + h[0] + h[1] + h[1] + h[2] + h[2];
+            return [parseInt(h.slice(0, 2), 16), parseInt(h.slice(2, 4), 16), parseInt(h.slice(4, 6), 16)];
+        };
+        const a = toRgb(c1), b = toRgb(c2);
+        if (!a || !b) return null;
+        const hex = n => Math.round(n).toString(16).padStart(2, '0');
+        return '#' + hex((a[0] + b[0]) / 2) + hex((a[1] + b[1]) / 2) + hex((a[2] + b[2]) / 2);
+    }
+
+    /** Turn a paint value into a plain colour, resolving url(#gradient). */
+    resolvePaint(value, what) {
+        if (!value) return value;
+        const url = /^url\(\s*['"]?#([^)'"\s]+)['"]?\s*\)/.exec(value.trim());
+        if (!url) return value;
+
+        const resolved = this.resolveGradient(url[1]);
+        if (resolved) {
+            this.warn(`gradient "#${url[1]}" was flattened to a single colour (${resolved})`);
+            return resolved;
+        }
+        this.warn(`${what} references "#${url[1]}" (pattern or unknown paint) and was left unpainted`);
+        return 'none';
+    }
+
+
+    /**
+     * Collect the rules of every <style> block so that class-based SVGs
+     * (.box, .fw, ...) keep their fills, strokes and fonts.
+     */
+    parseStyleSheet() {
+        this.cssRules = [];
+        this.svgEl.querySelectorAll('style').forEach(styleEl => {
+            const css = styleEl.textContent.replace(/\/\*[\s\S]*?\*\//g, '');
+            const ruleRe = /([^{}]+)\{([^{}]*)\}/g;
+            let m;
+            while ((m = ruleRe.exec(css)) !== null) {
+                const decls = this.parseDeclarations(m[2]);
+                if (Object.keys(decls).length === 0) continue;
+                for (const sel of m[1].split(',').map(x => x.trim()).filter(Boolean)) {
+                    const spec = this.selectorSpecificity(sel);
+                    if (spec === null) continue; // combinators / pseudo classes unsupported
+                    this.cssRules.push({ sel, spec, decls, order: this.cssRules.length });
+                }
+            }
+        });
+    }
+
+    parseDeclarations(text) {
+        const decls = {};
+        for (const prop of text.split(';')) {
+            const idx = prop.indexOf(':');
+            if (idx < 0) continue;
+            const key = prop.slice(0, idx).trim().toLowerCase();
+            const val = prop.slice(idx + 1).trim();
+            if (key && val) decls[key] = val;
+        }
+        return decls;
+    }
+
+    /** Specificity of a simple compound selector, or null when unsupported. */
+    selectorSpecificity(sel) {
+        if (/[\s>+~:[\]*]/.test(sel)) return null;
+        const ids = (sel.match(/#[\w-]+/g) || []).length;
+        const classes = (sel.match(/\.[\w-]+/g) || []).length;
+        const tag = /^[a-zA-Z]/.test(sel) ? 1 : 0;
+        return ids * 10000 + classes * 100 + tag;
+    }
+
+    selectorMatches(sel, el) {
+        const tagPart = sel.match(/^[a-zA-Z][\w-]*/);
+        if (tagPart && el.tagName.toLowerCase() !== tagPart[0].toLowerCase()) return false;
+        for (const id of sel.match(/#[\w-]+/g) || []) {
+            if (el.getAttribute('id') !== id.slice(1)) return false;
+        }
+        const classAttr = (el.getAttribute('class') || '').split(/\s+/);
+        for (const cls of sel.match(/\.[\w-]+/g) || []) {
+            if (classAttr.indexOf(cls.slice(1)) === -1) return false;
+        }
+        return true;
+    }
+
+    /**
+     * CSS cascade for a single element:
+     * presentation attributes < stylesheet rules (by specificity) < inline style.
+     */
+    ownProps(el) {
+        const cached = this._ownPropsCache.get(el);
+        if (cached) return cached;
+
+        const props = {};
+        for (const name of SvgStyleResolver.PRESENTATION_ATTRS) {
+            const v = el.getAttribute(name);
+            if (v !== null && v !== '') props[name] = v;
+        }
+        for (const r of this.matchingRules(el)) Object.assign(props, r.decls);
+
+        const inline = el.getAttribute('style');
+        if (inline) Object.assign(props, this.parseDeclarations(inline));
+
+        this._ownPropsCache.set(el, props);
+        return props;
+    }
+
+    /**
+     * Stylesheet rules that apply to an element, weakest first. Elements that
+     * share a tag/class/id share the answer, so this is resolved once per
+     * distinct selector target rather than once per element.
+     */
+    matchingRules(el) {
+        const rules = this.cssRules || [];
+        if (rules.length === 0) return rules;
+
+        const key = el.tagName.toLowerCase() + '|' +
+                    (el.getAttribute('class') || '') + '|' +
+                    (el.getAttribute('id') || '');
+        let matched = this._ruleCache.get(key);
+        if (!matched) {
+            matched = rules
+                .filter(r => this.selectorMatches(r.sel, el))
+                .sort((a, b) => (a.spec - b.spec) || (a.order - b.order));
+            this._ruleCache.set(key, matched);
+        }
+        return matched;
+    }
+
+    resolve(el) {
+        // Ancestor chain (root first) so inherited properties resolve correctly.
+        const chain = [];
+        let node = el;
+        while (node && node.nodeType === 1) {
+            chain.unshift(node);
+            if (node === this.svgEl) break;
+            node = node.parentNode;
+        }
+
+        const props = {};
+        for (let i = 0; i < chain.length; i++) {
+            const own = this.ownProps(chain[i]);
+            if (i === chain.length - 1) {
+                Object.assign(props, own);
+            } else {
+                for (const key of SvgStyleResolver.INHERITED_PROPS) {
+                    if (own[key] !== undefined) props[key] = own[key];
+                }
+            }
+        }
+
+        const num = (v, fallback) => {
+            const n = parseFloat(v);
+            return isNaN(n) ? fallback : n;
+        };
+        const dash = props['stroke-dasharray'];
+
+        return Object.assign(SceneModel.defaultStyle(), {
+            fill: this.resolvePaint(props['fill'] !== undefined ? props['fill'] : 'none', 'fill'),
+            fillOpacity: num(props['fill-opacity'], 1),
+            stroke: this.resolvePaint(props['stroke'] !== undefined ? props['stroke'] : 'none', 'stroke'),
+            strokeWidth: num(props['stroke-width'], 1),
+            strokeOpacity: num(props['stroke-opacity'], 1),
+            strokeDasharray: (dash && dash !== 'none') ? dash : null,
+            fontSize: num(props['font-size'], 14),
+            fontFamily: props['font-family'] || 'Calibri',
+            fontWeight: props['font-weight'] || 'normal',
+            // SVG default is "start" - "middle" silently re-centres every left-aligned label.
+            textAnchor: props['text-anchor'] || 'start',
+            opacity: num(props['opacity'], 1),
+            rx: num(props['rx'], 0),
+            ry: num(props['ry'], 0)
+        });
+    }
+}
+
+</script>
+    <script>/* svg-parser.js */
+// @ts-check
+/* global SceneModel, SceneLayout, SvgTransform, SvgStyleResolver */
+/**
+ * SVG Parser - Extracts shapes, connectors, and text from Claude-generated SVGs.
+ *
+ * Claude typically generates SVGs with:
+ * - <rect> for boxes/cards
+ * - <circle>, <ellipse> for circles
+ * - <line>, <polyline>, <path> for arrows/connectors
+ * - <polygon> for diamonds/triangles
+ * - <text> for labels
+ * - <marker> definitions for arrowheads
+ * - <g> groups combining shapes with their labels
+ */
+
+class SvgParser {
     constructor(svgString) {
         this.svgString = svgString;
         this.parser = new DOMParser();
@@ -259,14 +1116,16 @@ class SvgParser {
         this.connectors = [];
         this.texts = [];
         this.defs = {};
-        this.gradients = {};
         this.idMap = {};
         this.warnings = [];
         this._warned = new Set();
-        // _extractStyle walks the ancestor chain of every element, so the same
-        // ancestors get resolved over and over; cache both layers.
-        this._ownPropsCache = new Map();
-        this._ruleCache = new Map();
+        /** @type {SvgStyleResolver} */
+        this.style = null;
+    }
+
+    /** Combine a parent matrix with a child transform attribute. */
+    _combine(parent, child) {
+        return SvgTransform.combine(parent, child, (msg) => this._warn(msg));
     }
 
     /** Record a conversion caveat once, so the UI can surface what was dropped. */
@@ -289,20 +1148,21 @@ class SvgParser {
         }
 
         this._parseViewBox();
-        this._parseStyleSheet();
+        this.style = new SvgStyleResolver(this.svgEl, (msg) => this._warn(msg));
         this._parseDefs();
         this._parseElements(this.svgEl, null);
-        this._markContainers();
-        this._associateTextsWithShapes();
-        this._detectConnectors();
 
-        return {
+        const scene = SceneModel.normalise({
             warnings: this.warnings,
             viewBox: this.viewBox,
             shapes: this.shapes,
             connectors: this.connectors,
             texts: this.texts
-        };
+        });
+
+        // Container detection, label assignment and connector gluing are not
+        // SVG-specific, so they run on the scene for every input format.
+        return SceneLayout.apply(scene);
     }
 
     _parseViewBox() {
@@ -328,12 +1188,6 @@ class SvgParser {
             if (marker.id) this.defs[marker.id] = { type: 'marker', id: marker.id };
         });
 
-        // Gradients are flattened to a single colour; remember their stops
-        this.svgEl.querySelectorAll('linearGradient, radialGradient').forEach(g => {
-            if (!g.id) return;
-            this.gradients[g.id] = g;
-        });
-
         // Index every id once so <use> can resolve references cheaply
         this.svgEl.querySelectorAll('[id]').forEach(el => {
             const id = el.getAttribute('id');
@@ -341,77 +1195,6 @@ class SvgParser {
         });
     }
 
-    /** Colour of a gradient stop, from either the attribute or its style. */
-    _stopColor(stop) {
-        if (!stop) return null;
-        const inline = stop.getAttribute('style');
-        if (inline) {
-            const decls = this._parseDeclarations(inline);
-            if (decls['stop-color']) return decls['stop-color'];
-        }
-        const own = this._ownProps(stop);
-        return stop.getAttribute('stop-color') || own['stop-color'] || null;
-    }
-
-    /**
-     * Visio has no gradient fill here, so a gradient is flattened to the blend
-     * of its first and last stop - far closer than the previous fallback,
-     * which turned every gradient into solid black.
-     */
-    _resolveGradient(id) {
-        let g = this.gradients[id];
-        if (!g) return null;
-
-        // A gradient may inherit its stops from another one via href
-        let stops = g.querySelectorAll('stop');
-        let guard = 0;
-        while (stops.length === 0 && guard++ < 8) {
-            const href = g.getAttribute('href') || g.getAttribute('xlink:href');
-            if (!href || href[0] !== '#') break;
-            g = this.gradients[href.slice(1)];
-            if (!g) break;
-            stops = g.querySelectorAll('stop');
-        }
-        if (stops.length === 0) return null;
-
-        const first = this._stopColor(stops[0]);
-        const last = this._stopColor(stops[stops.length - 1]);
-        if (!first) return null;
-        if (!last || last === first) return first;
-
-        const mix = this._blend(first, last);
-        return mix || first;
-    }
-
-    /** Average two colours; returns null when either cannot be read as hex. */
-    _blend(c1, c2) {
-        const toRgb = c => {
-            const m = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(c.trim());
-            if (!m) return null;
-            let h = m[1];
-            if (h.length === 3) h = h[0] + h[0] + h[1] + h[1] + h[2] + h[2];
-            return [parseInt(h.slice(0, 2), 16), parseInt(h.slice(2, 4), 16), parseInt(h.slice(4, 6), 16)];
-        };
-        const a = toRgb(c1), b = toRgb(c2);
-        if (!a || !b) return null;
-        const hex = n => Math.round(n).toString(16).padStart(2, '0');
-        return '#' + hex((a[0] + b[0]) / 2) + hex((a[1] + b[1]) / 2) + hex((a[2] + b[2]) / 2);
-    }
-
-    /** Turn a paint value into a plain colour, resolving url(#gradient). */
-    _resolvePaint(value, what) {
-        if (!value) return value;
-        const url = /^url\(\s*['"]?#([^)'"\s]+)['"]?\s*\)/.exec(value.trim());
-        if (!url) return value;
-
-        const resolved = this._resolveGradient(url[1]);
-        if (resolved) {
-            this._warn(`gradient "#${url[1]}" was flattened to a single colour (${resolved})`);
-            return resolved;
-        }
-        this._warn(`${what} references "#${url[1]}" (pattern or unknown paint) and was left unpainted`);
-        return 'none';
-    }
 
     _parseElements(parent, groupTransform, depth) {
         depth = depth || 0;
@@ -427,7 +1210,7 @@ class SvgParser {
 
             if (tag === 'g' || tag === 'a' || tag === 'switch') {
                 if (tag === 'switch') this._warn('<switch> was flattened - every branch was converted');
-                const transform = this._combineTransform(groupTransform, el.getAttribute('transform'));
+                const transform = this._combine(groupTransform, el.getAttribute('transform'));
                 this._parseElements(el, transform, depth);
                 continue;
             }
@@ -441,8 +1224,8 @@ class SvgParser {
                 this._warn('clip-path / mask / filter are ignored - shapes are converted unclipped');
             }
 
-            const transform = this._combineTransform(groupTransform, el.getAttribute('transform'));
-            const style = this._scaleStyle(this._extractStyle(el), transform);
+            const transform = this._combine(groupTransform, el.getAttribute('transform'));
+            const style = SvgTransform.scaleStyle(this.style.resolve(el), transform);
             this._dispatchElement(tag, el, style, transform);
         }
     }
@@ -503,307 +1286,35 @@ class SvgParser {
             return;
         }
 
-        let transform = this._combineTransform(groupTransform, el.getAttribute('transform'));
+        let transform = this._combine(groupTransform, el.getAttribute('transform'));
         const x = parseFloat(el.getAttribute('x') || 0);
         const y = parseFloat(el.getAttribute('y') || 0);
         if (x || y) {
-            transform = this._combineTransform(transform, { a: 1, b: 0, c: 0, d: 1, e: x, f: y });
+            transform = this._combine(transform, { a: 1, b: 0, c: 0, d: 1, e: x, f: y });
         }
 
         const tag = target.tagName.toLowerCase();
         if (tag === 'g' || tag === 'symbol' || tag === 'svg') {
-            const inner = this._combineTransform(transform, target.getAttribute('transform'));
+            const inner = this._combine(transform, target.getAttribute('transform'));
             this._parseElements(target, inner, depth + 1);
             return;
         }
 
-        const inner = this._combineTransform(transform, target.getAttribute('transform'));
-        const style = this._scaleStyle(this._extractStyle(target), inner);
+        const inner = this._combine(transform, target.getAttribute('transform'));
+        const style = SvgTransform.scaleStyle(this.style.resolve(target), inner);
         this._dispatchElement(tag, target, style, inner);
     }
 
-    /**
-     * Collect the rules of every <style> block so that class-based SVGs
-     * (.box, .fw, ...) keep their fills, strokes and fonts.
-     */
-    _parseStyleSheet() {
-        this.cssRules = [];
-        this.svgEl.querySelectorAll('style').forEach(styleEl => {
-            const css = styleEl.textContent.replace(/\/\*[\s\S]*?\*\//g, '');
-            const ruleRe = /([^{}]+)\{([^{}]*)\}/g;
-            let m;
-            while ((m = ruleRe.exec(css)) !== null) {
-                const decls = this._parseDeclarations(m[2]);
-                if (Object.keys(decls).length === 0) continue;
-                for (const sel of m[1].split(',').map(x => x.trim()).filter(Boolean)) {
-                    const spec = this._selectorSpecificity(sel);
-                    if (spec === null) continue; // combinators / pseudo classes unsupported
-                    this.cssRules.push({ sel, spec, decls, order: this.cssRules.length });
-                }
-            }
-        });
-    }
-
-    _parseDeclarations(text) {
-        const decls = {};
-        for (const prop of text.split(';')) {
-            const idx = prop.indexOf(':');
-            if (idx < 0) continue;
-            const key = prop.slice(0, idx).trim().toLowerCase();
-            const val = prop.slice(idx + 1).trim();
-            if (key && val) decls[key] = val;
-        }
-        return decls;
-    }
-
-    /** Specificity of a simple compound selector, or null when unsupported. */
-    _selectorSpecificity(sel) {
-        if (/[\s>+~:\[\]*]/.test(sel)) return null;
-        const ids = (sel.match(/#[\w-]+/g) || []).length;
-        const classes = (sel.match(/\.[\w-]+/g) || []).length;
-        const tag = /^[a-zA-Z]/.test(sel) ? 1 : 0;
-        return ids * 10000 + classes * 100 + tag;
-    }
-
-    _selectorMatches(sel, el) {
-        const tagPart = sel.match(/^[a-zA-Z][\w-]*/);
-        if (tagPart && el.tagName.toLowerCase() !== tagPart[0].toLowerCase()) return false;
-        for (const id of sel.match(/#[\w-]+/g) || []) {
-            if (el.getAttribute('id') !== id.slice(1)) return false;
-        }
-        const classAttr = (el.getAttribute('class') || '').split(/\s+/);
-        for (const cls of sel.match(/\.[\w-]+/g) || []) {
-            if (classAttr.indexOf(cls.slice(1)) === -1) return false;
-        }
-        return true;
-    }
-
-    /**
-     * CSS cascade for a single element:
-     * presentation attributes < stylesheet rules (by specificity) < inline style.
-     */
-    _ownProps(el) {
-        const cached = this._ownPropsCache.get(el);
-        if (cached) return cached;
-
-        const props = {};
-        for (const name of SvgParser.PRESENTATION_ATTRS) {
-            const v = el.getAttribute(name);
-            if (v !== null && v !== '') props[name] = v;
-        }
-        for (const r of this._matchingRules(el)) Object.assign(props, r.decls);
-
-        const inline = el.getAttribute('style');
-        if (inline) Object.assign(props, this._parseDeclarations(inline));
-
-        this._ownPropsCache.set(el, props);
-        return props;
-    }
-
-    /**
-     * Stylesheet rules that apply to an element, weakest first. Elements that
-     * share a tag/class/id share the answer, so this is resolved once per
-     * distinct selector target rather than once per element.
-     */
-    _matchingRules(el) {
-        const rules = this.cssRules || [];
-        if (rules.length === 0) return rules;
-
-        const key = el.tagName.toLowerCase() + '|' +
-                    (el.getAttribute('class') || '') + '|' +
-                    (el.getAttribute('id') || '');
-        let matched = this._ruleCache.get(key);
-        if (!matched) {
-            matched = rules
-                .filter(r => this._selectorMatches(r.sel, el))
-                .sort((a, b) => (a.spec - b.spec) || (a.order - b.order));
-            this._ruleCache.set(key, matched);
-        }
-        return matched;
-    }
-
-    _extractStyle(el) {
-        // Ancestor chain (root first) so inherited properties resolve correctly.
-        const chain = [];
-        let node = el;
-        while (node && node.nodeType === 1) {
-            chain.unshift(node);
-            if (node === this.svgEl) break;
-            node = node.parentNode;
-        }
-
-        const props = {};
-        for (let i = 0; i < chain.length; i++) {
-            const own = this._ownProps(chain[i]);
-            if (i === chain.length - 1) {
-                Object.assign(props, own);
-            } else {
-                for (const key of SvgParser.INHERITED_PROPS) {
-                    if (own[key] !== undefined) props[key] = own[key];
-                }
-            }
-        }
-
-        const num = (v, fallback) => {
-            const n = parseFloat(v);
-            return isNaN(n) ? fallback : n;
-        };
-        const dash = props['stroke-dasharray'];
-
-        return {
-            fill: this._resolvePaint(props['fill'] !== undefined ? props['fill'] : 'none', 'fill'),
-            fillOpacity: num(props['fill-opacity'], 1),
-            stroke: this._resolvePaint(props['stroke'] !== undefined ? props['stroke'] : 'none', 'stroke'),
-            strokeWidth: num(props['stroke-width'], 1),
-            strokeOpacity: num(props['stroke-opacity'], 1),
-            strokeDasharray: (dash && dash !== 'none') ? dash : null,
-            fontSize: num(props['font-size'], 14),
-            fontFamily: props['font-family'] || 'Calibri',
-            fontWeight: props['font-weight'] || 'normal',
-            // SVG default is "start" - "middle" silently re-centres every left-aligned label.
-            textAnchor: props['text-anchor'] || 'start',
-            opacity: num(props['opacity'], 1),
-            rx: num(props['rx'], 0),
-            ry: num(props['ry'], 0)
-        };
-    }
-
-    // ---- Transform handling -------------------------------------------------
-    // Transforms are carried as affine matrices {a,b,c,d,e,f}:
-    //   x' = a*x + c*y + e
-    //   y' = b*x + d*y + f
-    // A string would only ever let us honour the outermost translate.
-
-    _matrixMultiply(m1, m2) {
-        return {
-            a: m1.a * m2.a + m1.c * m2.b,
-            b: m1.b * m2.a + m1.d * m2.b,
-            c: m1.a * m2.c + m1.c * m2.d,
-            d: m1.b * m2.c + m1.d * m2.d,
-            e: m1.a * m2.e + m1.c * m2.f + m1.e,
-            f: m1.b * m2.e + m1.d * m2.f + m1.f
-        };
-    }
-
-    /** Parse a transform attribute (any number of chained functions). */
-    _parseTransformAttr(str) {
-        if (!str) return null;
-        let m = null;
-        const fnRe = /([a-zA-Z]+)\s*\(([^)]*)\)/g;
-        let match;
-        while ((match = fnRe.exec(str)) !== null) {
-            const name = match[1].toLowerCase();
-            const args = match[2].trim().split(/[\s,]+/).map(parseFloat).filter(n => !isNaN(n));
-            const step = this._transformFunctionToMatrix(name, args);
-            if (!step) {
-                this._warn(`transform "${name}()" is not supported and was ignored`);
-                continue;
-            }
-            m = m ? this._matrixMultiply(m, step) : step;
-        }
-        return m;
-    }
-
-    _transformFunctionToMatrix(name, a) {
-        const rad = deg => deg * Math.PI / 180;
-        switch (name) {
-            case 'translate':
-                return { a: 1, b: 0, c: 0, d: 1, e: a[0] || 0, f: a[1] || 0 };
-            case 'scale': {
-                const sx = a[0] !== undefined ? a[0] : 1;
-                const sy = a[1] !== undefined ? a[1] : sx;
-                return { a: sx, b: 0, c: 0, d: sy, e: 0, f: 0 };
-            }
-            case 'rotate': {
-                const t = rad(a[0] || 0);
-                const cos = Math.cos(t), sin = Math.sin(t);
-                const rot = { a: cos, b: sin, c: -sin, d: cos, e: 0, f: 0 };
-                if (a.length < 3) return rot;
-                // rotate(angle cx cy) == translate(cx,cy) rotate(angle) translate(-cx,-cy)
-                const to = { a: 1, b: 0, c: 0, d: 1, e: a[1], f: a[2] };
-                const back = { a: 1, b: 0, c: 0, d: 1, e: -a[1], f: -a[2] };
-                return this._matrixMultiply(this._matrixMultiply(to, rot), back);
-            }
-            case 'skewx':
-                return { a: 1, b: 0, c: Math.tan(rad(a[0] || 0)), d: 1, e: 0, f: 0 };
-            case 'skewy':
-                return { a: 1, b: Math.tan(rad(a[0] || 0)), c: 0, d: 1, e: 0, f: 0 };
-            case 'matrix':
-                if (a.length < 6) return null;
-                return { a: a[0], b: a[1], c: a[2], d: a[3], e: a[4], f: a[5] };
-            default:
-                return null;
-        }
-    }
-
-    _combineTransform(parent, child) {
-        const childMatrix = typeof child === 'string' ? this._parseTransformAttr(child) : child;
-        if (!parent) return childMatrix || null;
-        if (!childMatrix) return parent;
-        return this._matrixMultiply(parent, childMatrix);
-    }
-
-    _applyTransform(x, y, m) {
-        if (!m) return { x, y };
-        return {
-            x: m.a * x + m.c * y + m.e,
-            y: m.b * x + m.d * y + m.f
-        };
-    }
-
-    /** Uniform scale factor of a matrix (used for stroke widths and font sizes). */
-    _transformScale(m) {
-        if (!m) return 1;
-        const det = Math.abs(m.a * m.d - m.b * m.c);
-        return det > 0 ? Math.sqrt(det) : 1;
-    }
-
-    /**
-     * Map an axis-aligned box through a matrix. Pure translate/scale keeps it
-     * axis aligned; a rotation is reported separately so Visio can spin the
-     * shape via its Angle cell instead of distorting the geometry.
-     */
-    _transformRect(x, y, w, h, m) {
-        if (!m) return { x, y, width: w, height: h, angle: 0 };
-
-        const centre = this._applyTransform(x + w / 2, y + h / 2, m);
-        const sx = Math.hypot(m.a, m.b);
-        const sy = Math.hypot(m.c, m.d);
-        const width = w * sx;
-        const height = h * sy;
-        // SVG rotates clockwise (y grows downwards), Visio counter-clockwise.
-        const angle = -Math.atan2(m.b, m.a);
-
-        return {
-            x: centre.x - width / 2,
-            y: centre.y - height / 2,
-            width,
-            height,
-            angle: Math.abs(angle) < 1e-9 ? 0 : angle
-        };
-    }
-
-    /** Stroke widths and font sizes scale with the transform. */
-    _scaleStyle(style, m) {
-        const s = this._transformScale(m);
-        if (s === 1) return style;
-        return Object.assign({}, style, {
-            strokeWidth: style.strokeWidth * s,
-            fontSize: style.fontSize * s,
-            rx: style.rx * s,
-            ry: style.ry * s
-        });
-    }
 
     _parseRect(el, style, transform) {
-        let x = parseFloat(el.getAttribute('x') || 0);
-        let y = parseFloat(el.getAttribute('y') || 0);
+        const x = parseFloat(el.getAttribute('x') || 0);
+        const y = parseFloat(el.getAttribute('y') || 0);
         const w = parseFloat(el.getAttribute('width') || 0);
         const h = parseFloat(el.getAttribute('height') || 0);
 
         if (w === 0 || h === 0) return;
 
-        const box = this._transformRect(x, y, w, h, transform);
+        const box = SvgTransform.rect(x, y, w, h, transform);
 
         this.shapes.push({
             type: 'rect',
@@ -819,13 +1330,13 @@ class SvgParser {
     }
 
     _parseCircle(el, style, transform) {
-        let cx = parseFloat(el.getAttribute('cx') || 0);
-        let cy = parseFloat(el.getAttribute('cy') || 0);
+        const cx = parseFloat(el.getAttribute('cx') || 0);
+        const cy = parseFloat(el.getAttribute('cy') || 0);
         const r = parseFloat(el.getAttribute('r') || 0);
 
         if (r === 0) return;
 
-        const box = this._transformRect(cx - r, cy - r, r * 2, r * 2, transform);
+        const box = SvgTransform.rect(cx - r, cy - r, r * 2, r * 2, transform);
 
         this.shapes.push({
             type: 'circle',
@@ -844,14 +1355,14 @@ class SvgParser {
     }
 
     _parseEllipse(el, style, transform) {
-        let cx = parseFloat(el.getAttribute('cx') || 0);
-        let cy = parseFloat(el.getAttribute('cy') || 0);
+        const cx = parseFloat(el.getAttribute('cx') || 0);
+        const cy = parseFloat(el.getAttribute('cy') || 0);
         const rx = parseFloat(el.getAttribute('rx') || 0);
         const ry = parseFloat(el.getAttribute('ry') || 0);
 
         if (rx === 0 || ry === 0) return;
 
-        const box = this._transformRect(cx - rx, cy - ry, rx * 2, ry * 2, transform);
+        const box = SvgTransform.rect(cx - rx, cy - ry, rx * 2, ry * 2, transform);
 
         this.shapes.push({
             type: 'ellipse',
@@ -875,7 +1386,7 @@ class SvgParser {
 
         let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
         for (const p of points) {
-            const tp = this._applyTransform(p.x, p.y, transform);
+            const tp = SvgTransform.apply(p.x, p.y, transform);
             minX = Math.min(minX, tp.x);
             minY = Math.min(minY, tp.y);
             maxX = Math.max(maxX, tp.x);
@@ -891,7 +1402,7 @@ class SvgParser {
             y: minY,
             width: maxX - minX,
             height: maxY - minY,
-            points: points.map(p => this._applyTransform(p.x, p.y, transform)),
+            points: points.map(p => SvgTransform.apply(p.x, p.y, transform)),
             style,
             id: el.id || null,
             text: null
@@ -916,21 +1427,19 @@ class SvgParser {
     }
 
     _parseLine(el, style, transform) {
-        let x1 = parseFloat(el.getAttribute('x1') || 0);
-        let y1 = parseFloat(el.getAttribute('y1') || 0);
-        let x2 = parseFloat(el.getAttribute('x2') || 0);
-        let y2 = parseFloat(el.getAttribute('y2') || 0);
+        const x1 = parseFloat(el.getAttribute('x1') || 0);
+        const y1 = parseFloat(el.getAttribute('y1') || 0);
+        const x2 = parseFloat(el.getAttribute('x2') || 0);
+        const y2 = parseFloat(el.getAttribute('y2') || 0);
 
-        const p1 = this._applyTransform(x1, y1, transform);
-        const p2 = this._applyTransform(x2, y2, transform);
+        const p1 = SvgTransform.apply(x1, y1, transform);
+        const p2 = SvgTransform.apply(x2, y2, transform);
 
         const arrows = this._arrowMarkers(el);
-        const hasArrow = arrows.start || arrows.end;
 
         this.connectors.push({
             type: 'line',
             points: [p1, p2],
-            hasArrow,
             arrowStart: arrows.start,
             arrowEnd: arrows.end,
             style,
@@ -944,18 +1453,16 @@ class SvgParser {
         if (!pointsStr) return;
 
         const points = this._parsePointsString(pointsStr).map(p =>
-            this._applyTransform(p.x, p.y, transform)
+            SvgTransform.apply(p.x, p.y, transform)
         );
 
         if (points.length < 2) return;
 
         const arrows = this._arrowMarkers(el);
-        const hasArrow = arrows.start || arrows.end;
 
         this.connectors.push({
             type: 'polyline',
             points,
-            hasArrow,
             arrowStart: arrows.start,
             arrowEnd: arrows.end,
             style,
@@ -969,6 +1476,7 @@ class SvgParser {
         if (!d) return;
 
         const arrows = this._arrowMarkers(el);
+        // An arrowhead is a strong hint that a path is a connector, not a shape
         const hasArrow = arrows.start || arrows.end;
         const points = this._pathToPoints(d, transform);
 
@@ -985,7 +1493,6 @@ class SvgParser {
             this.connectors.push({
                 type: 'path',
                 points,
-                hasArrow,
                 arrowStart: arrows.start,
                 arrowEnd: arrows.end,
                 style,
@@ -1019,7 +1526,6 @@ class SvgParser {
             this.connectors.push({
                 type: 'path',
                 points,
-                hasArrow,
                 arrowStart: arrows.start,
                 arrowEnd: arrows.end,
                 style,
@@ -1080,7 +1586,7 @@ class SvgParser {
 
             const hasOwnPos = node.hasAttribute('x') || node.hasAttribute('y') ||
                               node.hasAttribute('dx') || node.hasAttribute('dy');
-            const spanStyle = this._scaleStyle(this._extractStyle(node), transform);
+            const spanStyle = SvgTransform.scaleStyle(this.style.resolve(node), transform);
 
             if (!hasOwnPos) {
                 cur.parts.push(node.textContent);
@@ -1098,7 +1604,7 @@ class SvgParser {
         flush();
 
         for (const piece of pieces) {
-            const pos = this._applyTransform(piece.x, piece.y, transform);
+            const pos = SvgTransform.apply(piece.x, piece.y, transform);
             const st = Object.assign({}, piece.style);
             // Text is painted with `fill`; SVG's default text colour is black.
             st.textColor = (st.fill && st.fill !== 'none') ? st.fill : '#000000';
@@ -1158,7 +1664,7 @@ class SvgParser {
                     for (let i = 0; i < nums.length; i += 2) {
                         curX = nums[i]; curY = nums[i + 1];
                         startX = curX; startY = curY;
-                        const p = this._applyTransform(curX, curY, transform);
+                        const p = SvgTransform.apply(curX, curY, transform);
                         points.push(p);
                     }
                     break;
@@ -1166,49 +1672,49 @@ class SvgParser {
                     for (let i = 0; i < nums.length; i += 2) {
                         curX += nums[i]; curY += nums[i + 1];
                         if (i === 0) { startX = curX; startY = curY; }
-                        const p = this._applyTransform(curX, curY, transform);
+                        const p = SvgTransform.apply(curX, curY, transform);
                         points.push(p);
                     }
                     break;
                 case 'L':
                     for (let i = 0; i < nums.length; i += 2) {
                         curX = nums[i]; curY = nums[i + 1];
-                        const p = this._applyTransform(curX, curY, transform);
+                        const p = SvgTransform.apply(curX, curY, transform);
                         points.push(p);
                     }
                     break;
                 case 'l':
                     for (let i = 0; i < nums.length; i += 2) {
                         curX += nums[i]; curY += nums[i + 1];
-                        const p = this._applyTransform(curX, curY, transform);
+                        const p = SvgTransform.apply(curX, curY, transform);
                         points.push(p);
                     }
                     break;
                 case 'H':
                     for (const n of nums) {
                         curX = n;
-                        const p = this._applyTransform(curX, curY, transform);
+                        const p = SvgTransform.apply(curX, curY, transform);
                         points.push(p);
                     }
                     break;
                 case 'h':
                     for (const n of nums) {
                         curX += n;
-                        const p = this._applyTransform(curX, curY, transform);
+                        const p = SvgTransform.apply(curX, curY, transform);
                         points.push(p);
                     }
                     break;
                 case 'V':
                     for (const n of nums) {
                         curY = n;
-                        const p = this._applyTransform(curX, curY, transform);
+                        const p = SvgTransform.apply(curX, curY, transform);
                         points.push(p);
                     }
                     break;
                 case 'v':
                     for (const n of nums) {
                         curY += n;
-                        const p = this._applyTransform(curX, curY, transform);
+                        const p = SvgTransform.apply(curX, curY, transform);
                         points.push(p);
                     }
                     break;
@@ -1219,10 +1725,10 @@ class SvgParser {
                             // Add control points for curve approximation
                             const midX = (curX + nums[i + 4]) / 2;
                             const midY = (curY + nums[i + 5]) / 2;
-                            const mp = this._applyTransform(midX, midY, transform);
+                            const mp = SvgTransform.apply(midX, midY, transform);
                             points.push(mp);
                             curX = nums[i + 4]; curY = nums[i + 5];
-                            const p = this._applyTransform(curX, curY, transform);
+                            const p = SvgTransform.apply(curX, curY, transform);
                             points.push(p);
                         }
                     }
@@ -1232,10 +1738,10 @@ class SvgParser {
                         if (i + 5 < nums.length) {
                             const midX = curX + nums[i + 4] / 2;
                             const midY = curY + nums[i + 5] / 2;
-                            const mp = this._applyTransform(midX, midY, transform);
+                            const mp = SvgTransform.apply(midX, midY, transform);
                             points.push(mp);
                             curX += nums[i + 4]; curY += nums[i + 5];
-                            const p = this._applyTransform(curX, curY, transform);
+                            const p = SvgTransform.apply(curX, curY, transform);
                             points.push(p);
                         }
                     }
@@ -1244,7 +1750,7 @@ class SvgParser {
                     for (let i = 0; i < nums.length; i += 4) {
                         if (i + 3 < nums.length) {
                             curX = nums[i + 2]; curY = nums[i + 3];
-                            const p = this._applyTransform(curX, curY, transform);
+                            const p = SvgTransform.apply(curX, curY, transform);
                             points.push(p);
                         }
                     }
@@ -1253,7 +1759,7 @@ class SvgParser {
                     for (let i = 0; i < nums.length; i += 4) {
                         if (i + 3 < nums.length) {
                             curX += nums[i + 2]; curY += nums[i + 3];
-                            const p = this._applyTransform(curX, curY, transform);
+                            const p = SvgTransform.apply(curX, curY, transform);
                             points.push(p);
                         }
                     }
@@ -1267,7 +1773,7 @@ class SvgParser {
                             } else {
                                 curX = nums[i + 5]; curY = nums[i + 6];
                             }
-                            const p = this._applyTransform(curX, curY, transform);
+                            const p = SvgTransform.apply(curX, curY, transform);
                             points.push(p);
                         }
                     }
@@ -1281,124 +1787,6 @@ class SvgParser {
         return points;
     }
 
-    /**
-     * A shape that fully encloses another shape is a grouping frame (subnet,
-     * VNet, legend box), not a labelled box. Such frames must not swallow the
-     * labels of the shapes inside them, and connectors must not glue to them.
-     */
-    _markContainers() {
-        for (const a of this.shapes) {
-            a.isContainer = false;
-            const areaA = a.width * a.height;
-            if (areaA <= 0) continue;
-            for (const b of this.shapes) {
-                if (b === a) continue;
-                const areaB = b.width * b.height;
-                if (areaB <= 0 || areaB >= areaA * 0.9) continue;
-                if (b.x >= a.x - 1 && b.y >= a.y - 1 &&
-                    b.x + b.width <= a.x + a.width + 1 &&
-                    b.y + b.height <= a.y + a.height + 1) {
-                    a.isContainer = true;
-                    break;
-                }
-            }
-        }
-    }
-
-    _associateTextsWithShapes() {
-        const PAD = 2;
-        const assigned = new Map();
-
-        for (const text of this.texts) {
-            let best = null;
-            let bestArea = Infinity;
-
-            for (const shape of this.shapes) {
-                if (shape.isContainer) continue;
-
-                const inside = text.x >= shape.x - PAD && text.x <= shape.x + shape.width + PAD &&
-                               text.y >= shape.y - PAD && text.y <= shape.y + shape.height + PAD;
-                if (!inside) continue;
-
-                // Innermost (smallest) enclosing shape wins, not the nearest centre -
-                // otherwise a label lands in the big frame around its box.
-                const area = shape.width * shape.height;
-                if (area < bestArea) {
-                    bestArea = area;
-                    best = shape;
-                }
-            }
-
-            if (best) {
-                if (!assigned.has(best)) assigned.set(best, []);
-                assigned.get(best).push(text);
-                text._associated = true;
-            }
-        }
-
-        for (const [shape, texts] of assigned) {
-            texts.sort((a, b) => (a.y - b.y) || (a.x - b.x));
-            shape.text = texts.map(t => t.text).join('\n');
-            // One run per source line so a heading keeps its own size/weight.
-            shape.textRuns = texts.map(t => ({ text: t.text, style: t.style }));
-            // The largest line drives the shape's overall font styling.
-            shape.textStyle = texts.reduce((a, b) =>
-                (b.style.fontSize || 0) > (a.style.fontSize || 0) ? b : a).style;
-        }
-
-        // Keep unassociated texts as standalone text shapes
-        this.texts = this.texts.filter(t => !t._associated);
-    }
-
-    _detectConnectors() {
-        // A fixed 30px radius is far too coarse on a small drawing and far too
-        // tight on a large one, so scale it with the diagram's diagonal.
-        const diagonal = Math.hypot(this.viewBox.width, this.viewBox.height);
-        this.glueThreshold = Math.max(8, Math.min(48, diagonal * 0.015));
-
-        // Try to detect which shapes connectors connect to
-        for (const conn of this.connectors) {
-            if (conn.points.length < 2) continue;
-
-            const startPt = conn.points[0];
-            const endPt = conn.points[conn.points.length - 1];
-
-            conn.fromShape = this._findNearestShape(startPt);
-            conn.toShape = this._findNearestShape(endPt);
-        }
-    }
-
-    _findNearestShape(point) {
-        const MAX_DIST = this.glueThreshold || 30;
-        let best = null;
-        let bestDist = MAX_DIST;
-        let bestArea = Infinity;
-
-        for (let i = 0; i < this.shapes.length; i++) {
-            const shape = this.shapes[i];
-            // Every point inside a frame has edge distance 0, so without this
-            // check all connectors would glue to the outermost frame.
-            if (shape.isContainer) continue;
-
-            const cx = shape.x + shape.width / 2;
-            const cy = shape.y + shape.height / 2;
-
-            // Distance to shape edge
-            const dx = Math.max(0, Math.abs(point.x - cx) - shape.width / 2);
-            const dy = Math.max(0, Math.abs(point.y - cy) - shape.height / 2);
-            const dist = Math.hypot(dx, dy);
-            if (dist >= MAX_DIST) continue;
-
-            const area = shape.width * shape.height;
-            if (dist < bestDist - 0.5 || (Math.abs(dist - bestDist) <= 0.5 && area < bestArea)) {
-                bestDist = dist;
-                bestArea = area;
-                best = i;
-            }
-        }
-
-        return best;
-    }
 
     getStats() {
         return {
@@ -1413,6 +1801,8 @@ class SvgParser {
 
 </script>
     <script>/* drawio-parser.js */
+// @ts-check
+/* global SceneModel, SceneLayout */
 /**
  * Draw.io Parser - Extracts shapes, connectors, and text from Draw.io XML files.
  *
@@ -1432,13 +1822,15 @@ class DrawioParser {
         this.shapes = [];
         this.connectors = [];
         this.texts = [];
+        /** @type {string[]} */
+        this.warnings = [];
 
         // Maps Draw.io cell IDs to shape indices in this.shapes
         this.cellIdToShapeIndex = {};
     }
 
     parse() {
-        let xmlContent = this.xmlString;
+        const xmlContent = this.xmlString;
 
         // Handle <mxfile> wrapper — may contain compressed or raw <mxGraphModel>
         const doc = this.parser.parseFromString(xmlContent, 'text/xml');
@@ -1469,12 +1861,18 @@ class DrawioParser {
 
         this._parseGraphModel(graphModel);
 
-        return {
+        const scene = SceneModel.normalise({
+            warnings: this.warnings,
             viewBox: this.viewBox,
             shapes: this.shapes,
             connectors: this.connectors,
             texts: this.texts
-        };
+        });
+
+        // Draw.io carries its own containment and edge information, so only
+        // the parts it does not express are derived here. Running the same
+        // stage as the SVG path keeps both formats behaving alike.
+        return SceneLayout.apply(scene);
     }
 
     getStats() {
@@ -1482,6 +1880,7 @@ class DrawioParser {
             shapes: this.shapes.length,
             connectors: this.connectors.length,
             texts: this.texts.length,
+            warnings: this.warnings,
             viewBox: this.viewBox
         };
     }
@@ -1664,10 +2063,10 @@ class DrawioParser {
         const strokeWidth = parseFloat(style['strokeWidth']) || 1;
         const dashed = style['dashed'] === '1';
 
-        // Detect arrows
-        const endArrow = style['endArrow'] || 'classic';
-        const startArrow = style['startArrow'] || 'none';
-        const hasArrow = endArrow !== 'none' && endArrow !== '0';
+        // Detect arrows. Draw.io defaults to a head at the target end only.
+        const isArrow = (v) => !!v && v !== 'none' && v !== '0';
+        const arrowEnd = isArrow(style['endArrow'] || 'classic');
+        const arrowStart = isArrow(style['startArrow']);
 
         const fromShape = sourceId != null ? (this.cellIdToShapeIndex[sourceId] ?? null) : null;
         const toShape = targetId != null ? (this.cellIdToShapeIndex[targetId] ?? null) : null;
@@ -1675,7 +2074,8 @@ class DrawioParser {
         this.connectors.push({
             type: 'line',
             points: points,
-            hasArrow: hasArrow,
+            arrowStart: arrowStart,
+            arrowEnd: arrowEnd,
             style: {
                 stroke: strokeColor,
                 strokeWidth: strokeWidth,
@@ -1695,6 +2095,7 @@ class DrawioParser {
                 x: midPt.x,
                 y: midPt.y,
                 text: text,
+                standalone: true,
                 style: {
                     fontSize: parseFloat(style['fontSize']) || 11,
                     textColor: style['fontColor'] || '#000000',
@@ -1811,6 +2212,7 @@ class DrawioParser {
 
 </script>
     <script>/* vsdx-builder.js */
+// @ts-check
 /**
  * VSDX Builder - Generates Visio .vsdx files from parsed SVG data.
  *
@@ -2395,7 +2797,8 @@ ${cellsXml}${sectionsXml}${textXml}
       </Section>`;
     }
 
-    _diamondGeom(w, h) {
+    // The diamond is drawn with relative coordinates, so its size is implied
+    _diamondGeom(_w, _h) {
         return `
       <Section N="Geometry" IX="0">
         <Cell N="NoFill" V="0"/>
@@ -2524,11 +2927,9 @@ ${cellsXml}${sectionsXml}${textXml}
         const lineTrans = this._transparency(conn.style.strokeOpacity, conn.style.opacity);
 
         // Arrow: 5 = filled triangle
-        // Fall back to hasArrow for parsers that do not report the ends
-        // (the Draw.io parser), otherwise honour marker-start/marker-end.
-        const hasEnds = conn.arrowStart !== undefined || conn.arrowEnd !== undefined;
-        const beginArrow = (hasEnds ? conn.arrowStart : false) ? '5' : '0';
-        const endArrow = (hasEnds ? conn.arrowEnd : conn.hasArrow) ? '5' : '0';
+        // SceneModel guarantees both ends are present and boolean
+        const beginArrow = conn.arrowStart ? '5' : '0';
+        const endArrow = conn.arrowEnd ? '5' : '0';
 
         // Build geometry
         let geomXml = `
@@ -2580,6 +2981,8 @@ ${cellsXml}${sectionsXml}${textXml}
 
 </script>
     <script>/* app.js */
+// @ts-check
+/* global SvgParser, DrawioParser, VsdxBuilder */
 /**
  * App - Ties together the UI, SVG parser, and VSDX builder.
  */
@@ -2587,9 +2990,9 @@ ${cellsXml}${sectionsXml}${textXml}
 (function () {
     const dropZone = document.getElementById('dropZone');
     const browseBtn = document.getElementById('browseBtn');
-    const fileInput = document.getElementById('fileInput');
-    const svgInput = document.getElementById('svgInput');
-    const convertBtn = document.getElementById('convertBtn');
+    const fileInput = /** @type {HTMLInputElement} */ (document.getElementById('fileInput'));
+    const svgInput = /** @type {HTMLTextAreaElement} */ (document.getElementById('svgInput'));
+    const convertBtn = /** @type {HTMLButtonElement} */ (document.getElementById('convertBtn'));
     const statusText = document.getElementById('statusText');
     const logEl = document.getElementById('log');
     const previewSection = document.getElementById('previewSection');
@@ -2662,8 +3065,9 @@ ${cellsXml}${sectionsXml}${textXml}
         }
 
         const reader = new FileReader();
-        reader.onload = (e) => {
-            const content = e.target.result;
+        reader.onload = () => {
+            // readAsText always yields a string; narrow it for the checker
+            const content = String(reader.result);
             currentInput = content;
             svgInput.value = content;
 
@@ -2699,7 +3103,8 @@ ${cellsXml}${sectionsXml}${textXml}
                 const probe = new SvgParser(svgString);
                 probe.parse();
                 showWarnings(probe.warnings);
-            } catch (e) {
+            } catch {
+                // An unparseable preview is not fatal; the convert step reports it
                 showWarnings([]);
             }
         } else {
@@ -2775,7 +3180,7 @@ ${cellsXml}${sectionsXml}${textXml}
                     const fw = (s.textStyle && s.textStyle.fontWeight) || 'normal';
                     const vAlign = s.verticalAlign || 'middle';
 
-                    let tx = s.x + s.width / 2;
+                    const tx = s.x + s.width / 2;
                     let ty, baseline;
                     if (vAlign === 'top') {
                         ty = s.y + fs + 4;
@@ -2798,7 +3203,7 @@ ${cellsXml}${sectionsXml}${textXml}
                 svg += `<path d="${d}" fill="none" stroke="${stroke}" stroke-width="${sw}"${dash}/>`;
 
                 // Draw arrowhead
-                if (c.hasArrow && c.points.length >= 2) {
+                if (c.arrowEnd && c.points.length >= 2) {
                     const last = c.points[c.points.length - 1];
                     const prev = c.points[c.points.length - 2];
                     const angle = Math.atan2(last.y - prev.y, last.x - prev.x);

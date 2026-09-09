@@ -1,23 +1,15 @@
+// @ts-check
 /**
  * Node.js test script for the SVG parser.
  * Tests parsing of sample SVGs to verify shape/connector extraction.
  */
 
 const fs = require('fs');
-const { JSDOM } = require('jsdom');
+const { load } = require('./tools/load.js');
 
-// Set up browser globals for the parser
-const dom = new JSDOM('<!DOCTYPE html><html><body></body></html>');
-global.DOMParser = dom.window.DOMParser;
-global.JSZip = require('jszip');
-const domParser = new dom.window.DOMParser();
-
-// Load the parsers
-const parserCode = fs.readFileSync('./svg-parser.js', 'utf8');
-const SvgParser = new Function(parserCode + '\nreturn SvgParser;')();
-
-const drawioParserCode = fs.readFileSync('./drawio-parser.js', 'utf8');
-const DrawioParser = new Function(drawioParserCode + '\nreturn DrawioParser;')();
+// The sources are loaded exactly as index.html loads them
+const { SceneModel, SceneLayout, SvgTransform, SvgStyleResolver,
+        SvgParser, DrawioParser, VsdxBuilder, domParser } = load();
 
 let passed = 0;
 let failed = 0;
@@ -54,7 +46,7 @@ const shapesWithText = result1.shapes.filter(s => s.text);
 assert(shapesWithText.length >= 4, `At least 4 shapes should have text (got ${shapesWithText.length})`);
 
 // Check arrow detection
-const arrowConnectors = result1.connectors.filter(c => c.hasArrow);
+const arrowConnectors = result1.connectors.filter(c => c.arrowEnd || c.arrowStart);
 assert(arrowConnectors.length >= 6, `At least 6 connectors should have arrows (got ${arrowConnectors.length})`);
 
 // Test 2: Architecture diagram
@@ -117,7 +109,7 @@ const drawioLinked = drawioResult.connectors.filter(c => c.fromShape !== null &&
 assert(drawioLinked.length >= 5, `At least 5 connectors should be linked (got ${drawioLinked.length})`);
 
 // Check arrows
-const drawioArrows = drawioResult.connectors.filter(c => c.hasArrow);
+const drawioArrows = drawioResult.connectors.filter(c => c.arrowEnd || c.arrowStart);
 assert(drawioArrows.length >= 5, `At least 5 connectors should have arrows (got ${drawioArrows.length})`);
 
 // Check edge labels become texts
@@ -146,7 +138,7 @@ const rawResult = rawParser.parse();
 assert(rawResult.shapes.length === 2, `Should have 2 shapes (got ${rawResult.shapes.length})`);
 assert(rawResult.connectors.length === 1, `Should have 1 connector (got ${rawResult.connectors.length})`);
 assert(rawResult.shapes[0].style.rx > 0, 'First shape should be rounded');
-assert(rawResult.connectors[0].hasArrow, 'Connector should have arrow');
+assert(rawResult.connectors[0].arrowEnd, 'Connector should have arrow');
 
 // Test 6: Real-world Draw.io (Köln BGP network diagram)
 console.log('\n--- Test 6: Real-world Draw.io (BGP network) ---');
@@ -197,7 +189,7 @@ assert(title && title.style.textAnchor === 'start', `text-anchor defaults to sta
 assert(title && title.style.textColor === '#009640', `text colour comes from the class (got ${title && title.style.textColor})`);
 assert(title && title.style.fontSize === 18, `class font-size applies (got ${title && title.style.fontSize})`);
 
-const link = result7.connectors.find(c => c.hasArrow);
+const link = result7.connectors.find(c => c.arrowEnd || c.arrowStart);
 assert(link && link.style.stroke === '#009640', `connector stroke from class (got ${link && link.style.stroke})`);
 const aIdx = result7.shapes.indexOf(nodeA), bIdx = result7.shapes.indexOf(nodeB);
 assert(link && link.fromShape === aIdx && link.toShape === bIdx,
@@ -205,7 +197,6 @@ assert(link && link.fromShape === aIdx && link.toShape === bIdx,
 
 // Test 8: the styles survive into the VSDX page
 console.log('\n--- Test 8: VSDX output ---');
-const VsdxBuilder = new Function(fs.readFileSync('./vsdx-builder.js', 'utf8') + '\nreturn VsdxBuilder;')();
 const pageXml = new VsdxBuilder(result7)._page1();
 
 assert(pageXml.indexOf('N="FillForegnd" V="#FFFFFF"') !== -1, 'fill colour reaches the VSDX');
@@ -250,8 +241,9 @@ assert(r9.texts.some(t => t.text === 'Bare bold'), 'an unpositioned tspan stays 
 
 assert(trParser.warnings.some(w => w.indexOf('<image>') === 0), 'unsupported <image> is reported');
 assert(trParser.warnings.some(w => w.indexOf('gradient') !== -1), 'gradient flattening is reported');
-assert(trParser.glueThreshold > 0 && trParser.glueThreshold < 30,
-    `glue radius scales with the drawing (got ${trParser.glueThreshold})`);
+const glueRadius = SceneLayout.glueRadius(r9, SceneLayout.TUNING);
+assert(glueRadius > 0 && glueRadius < 30,
+    `glue radius scales with the drawing (got ${glueRadius})`);
 
 // Test 10: those features reach the VSDX
 console.log('\n--- Test 10: VSDX for transforms and references ---');
@@ -276,6 +268,82 @@ assert(Math.abs(r11.shapes[0].angle + Math.PI / 2) < 1e-6,
     `rotate(90) becomes a -90 deg Visio angle (got ${r11.shapes[0].angle})`);
 assert(new VsdxBuilder(r11)._page1().indexOf('N="Angle" V="-1.57') !== -1,
     'the angle reaches the VSDX');
+
+// Test 13: the extracted modules, tested directly
+console.log('\n--- Test 13: SvgTransform (pure) ---');
+const T = SvgTransform;
+const near = (a, b, eps) => Math.abs(a - b) < (eps || 1e-9);
+
+const composed = T.combine(T.parseAttr('translate(100,100)'), 'translate(20,30)');
+const p13 = T.apply(10, 10, composed);
+assert(p13.x === 130 && p13.y === 140, `nested translates compose (got ${p13.x}/${p13.y})`);
+
+assert(T.parseAttr('') === null, 'an empty transform is no transform');
+assert(T.apply(5, 7, null).x === 5, 'a null matrix is the identity');
+
+const rot = T.parseAttr('rotate(90)');
+const rp = T.apply(1, 0, rot);
+assert(near(rp.x, 0) && near(rp.y, 1), `rotate(90) maps (1,0) to (0,1) (got ${rp.x}/${rp.y})`);
+
+const about = T.apply(50, 50, T.parseAttr('rotate(37,50,50)'));
+assert(near(about.x, 50) && near(about.y, 50), 'rotating about a point leaves that point fixed');
+
+assert(T.scaleOf(T.parseAttr('scale(3)')) === 3, 'uniform scale is reported');
+assert(near(T.scaleOf(T.parseAttr('scale(2,8)')), 4), 'non-uniform scale reports the geometric mean');
+assert(T.scaleOf(T.parseAttr('rotate(45)')) === 1, 'a pure rotation does not scale');
+
+const box = T.rect(10, 20, 30, 40, T.parseAttr('scale(2)'));
+assert(box.x === 20 && box.width === 60 && box.angle === 0, 'scale maps a box without rotating it');
+
+const chained = T.combine(T.parseAttr('translate(10,0)'), 'scale(2)');
+const cp = T.apply(5, 0, chained);
+assert(cp.x === 20, `order matters: translate then scale gives 20 (got ${cp.x})`);
+
+const warned = [];
+T.parseAttr('wobble(3)', (m) => warned.push(m));
+assert(warned.length === 1 && warned[0].indexOf('wobble') !== -1,
+    'an unknown transform function is reported, not silently applied');
+
+console.log('\n--- Test 13b: SceneModel ---');
+assert(SceneModel.validate(null).length > 0, 'a non-scene is rejected');
+assert(SceneModel.validate({}).length > 0, 'a scene missing its arrays is rejected');
+
+const filled = SceneModel.normalise({
+    viewBox: { width: 100, height: 100 },
+    shapes: [{ type: 'rect', x: 0, y: 0, width: 10, height: 10 }],
+    connectors: [{ type: 'line', points: [{ x: 0, y: 0 }, { x: 5, y: 5 }], hasArrow: true }],
+    texts: [{ x: 1, y: 1, text: 'hi' }]
+});
+assert(SceneModel.validate(filled).length === 0,
+    `normalise fills every required field (${SceneModel.validate(filled).join('; ')})`);
+assert(filled.shapes[0].isContainer === false && filled.shapes[0].angle === 0,
+    'shape defaults are applied');
+assert(filled.connectors[0].arrowEnd === true && filled.connectors[0].arrowStart === false,
+    'a legacy hasArrow becomes an end arrow');
+assert(filled.texts[0].standalone === false, 'texts default to being layout-assignable');
+
+const broken = SceneModel.normalise({
+    viewBox: { width: 10, height: 10 },
+    shapes: [], connectors: [{ type: 'line', points: [{ x: 0, y: 0 }, { x: 1, y: 1 }], toShape: 7 }], texts: []
+});
+assert(SceneModel.validate(broken).some(p => p.indexOf('toShape') !== -1),
+    'a connector pointing at a shape that does not exist is caught');
+
+console.log('\n--- Test 13c: SvgStyleResolver cascade ---');
+const cascadeDoc = domParser.parseFromString(
+    '<svg xmlns="http://www.w3.org/2000/svg" font-family="Georgia">' +
+    '<style>.a{fill:#111111;font-size:20px} rect{stroke:#222222}</style>' +
+    '<rect id="r" class="a" fill="#999999" style="stroke-width:4"/></svg>', 'image/svg+xml');
+const cascadeSvg = cascadeDoc.querySelector('svg');
+const resolver = new SvgStyleResolver(cascadeSvg, () => {});
+const resolved = resolver.resolve(cascadeSvg.querySelector('rect'));
+
+assert(resolved.fill === '#111111', `a class beats a presentation attribute (got ${resolved.fill})`);
+assert(resolved.stroke === '#222222', 'a type selector applies');
+assert(resolved.strokeWidth === 4, 'an inline style beats everything');
+assert(resolved.fontFamily === 'Georgia', 'font-family is inherited from the root');
+assert(resolved.fontSize === 20, 'font-size comes from the class');
+assert(resolver.resolve(cascadeSvg.querySelector('rect')) !== null, 'a second resolve hits the cache');
 
 // Test 12: the generated package is a well-formed .vsdx
 console.log('\n--- Test 12: Generated .vsdx package ---');
@@ -311,7 +379,6 @@ assert(parts['page1.xml'].indexOf('a &lt; b &amp; c') !== -1, 'shape text is XML
 
 // Full package, built the same way the browser builds it
 (async () => {
-    let zipFailed = null;
     try {
         const blob = await new VsdxBuilder(nastyParsed).build();
         // JSZip emits a Blob; loadAsync wants bytes
@@ -327,7 +394,6 @@ assert(parts['page1.xml'].indexOf('a &lt; b &amp; c') !== -1, 'shape text is XML
             assert(err === null, `${path} in the package is well-formed${err ? ' (' + err + ')' : ''}`);
         }
     } catch (e) {
-        zipFailed = e;
         assert(false, `building the .vsdx package threw: ${e.message}`);
     }
 

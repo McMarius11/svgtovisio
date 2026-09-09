@@ -1,3 +1,4 @@
+// @ts-check
 /**
  * VSDX Builder - Generates Visio .vsdx files from parsed SVG data.
  *
@@ -582,7 +583,8 @@ ${cellsXml}${sectionsXml}${textXml}
       </Section>`;
     }
 
-    _diamondGeom(w, h) {
+    // The diamond is drawn with relative coordinates, so its size is implied
+    _diamondGeom(_w, _h) {
         return `
       <Section N="Geometry" IX="0">
         <Cell N="NoFill" V="0"/>
@@ -711,11 +713,9 @@ ${cellsXml}${sectionsXml}${textXml}
         const lineTrans = this._transparency(conn.style.strokeOpacity, conn.style.opacity);
 
         // Arrow: 5 = filled triangle
-        // Fall back to hasArrow for parsers that do not report the ends
-        // (the Draw.io parser), otherwise honour marker-start/marker-end.
-        const hasEnds = conn.arrowStart !== undefined || conn.arrowEnd !== undefined;
-        const beginArrow = (hasEnds ? conn.arrowStart : false) ? '5' : '0';
-        const endArrow = (hasEnds ? conn.arrowEnd : conn.hasArrow) ? '5' : '0';
+        // SceneModel guarantees both ends are present and boolean
+        const beginArrow = conn.arrowStart ? '5' : '0';
+        const endArrow = conn.arrowEnd ? '5' : '0';
 
         // Build geometry
         let geomXml = `

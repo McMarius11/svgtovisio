@@ -197,6 +197,11 @@
 
     <input type="file" id="fileInput" accept=".svg,.drawio,.xml,image/svg+xml">
 
+    <!-- Load order matters: these are plain scripts, not modules. -->
+    <script src="scene-model.js"></script>
+    <script src="scene-layout.js"></script>
+    <script src="svg-transform.js"></script>
+    <script src="svg-style.js"></script>
     <script src="svg-parser.js"></script>
     <script src="drawio-parser.js"></script>
     <script src="vsdx-builder.js"></script>

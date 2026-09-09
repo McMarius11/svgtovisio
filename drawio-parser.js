@@ -1,3 +1,5 @@
+// @ts-check
+/* global SceneModel, SceneLayout */
 /**
  * Draw.io Parser - Extracts shapes, connectors, and text from Draw.io XML files.
  *
@@ -17,13 +19,15 @@ class DrawioParser {
         this.shapes = [];
         this.connectors = [];
         this.texts = [];
+        /** @type {string[]} */
+        this.warnings = [];
 
         // Maps Draw.io cell IDs to shape indices in this.shapes
         this.cellIdToShapeIndex = {};
     }
 
     parse() {
-        let xmlContent = this.xmlString;
+        const xmlContent = this.xmlString;
 
         // Handle <mxfile> wrapper — may contain compressed or raw <mxGraphModel>
         const doc = this.parser.parseFromString(xmlContent, 'text/xml');
@@ -54,12 +58,18 @@ class DrawioParser {
 
         this._parseGraphModel(graphModel);
 
-        return {
+        const scene = SceneModel.normalise({
+            warnings: this.warnings,
             viewBox: this.viewBox,
             shapes: this.shapes,
             connectors: this.connectors,
             texts: this.texts
-        };
+        });
+
+        // Draw.io carries its own containment and edge information, so only
+        // the parts it does not express are derived here. Running the same
+        // stage as the SVG path keeps both formats behaving alike.
+        return SceneLayout.apply(scene);
     }
 
     getStats() {
@@ -67,6 +77,7 @@ class DrawioParser {
             shapes: this.shapes.length,
             connectors: this.connectors.length,
             texts: this.texts.length,
+            warnings: this.warnings,
             viewBox: this.viewBox
         };
     }
@@ -249,10 +260,10 @@ class DrawioParser {
         const strokeWidth = parseFloat(style['strokeWidth']) || 1;
         const dashed = style['dashed'] === '1';
 
-        // Detect arrows
-        const endArrow = style['endArrow'] || 'classic';
-        const startArrow = style['startArrow'] || 'none';
-        const hasArrow = endArrow !== 'none' && endArrow !== '0';
+        // Detect arrows. Draw.io defaults to a head at the target end only.
+        const isArrow = (v) => !!v && v !== 'none' && v !== '0';
+        const arrowEnd = isArrow(style['endArrow'] || 'classic');
+        const arrowStart = isArrow(style['startArrow']);
 
         const fromShape = sourceId != null ? (this.cellIdToShapeIndex[sourceId] ?? null) : null;
         const toShape = targetId != null ? (this.cellIdToShapeIndex[targetId] ?? null) : null;
@@ -260,7 +271,8 @@ class DrawioParser {
         this.connectors.push({
             type: 'line',
             points: points,
-            hasArrow: hasArrow,
+            arrowStart: arrowStart,
+            arrowEnd: arrowEnd,
             style: {
                 stroke: strokeColor,
                 strokeWidth: strokeWidth,
@@ -280,6 +292,7 @@ class DrawioParser {
                 x: midPt.x,
                 y: midPt.y,
                 text: text,
+                standalone: true,
                 style: {
                     fontSize: parseFloat(style['fontSize']) || 11,
                     textColor: style['fontColor'] || '#000000',
