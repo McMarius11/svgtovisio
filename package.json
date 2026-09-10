@@ -9,7 +9,8 @@
     "test:unit": "node test.js",
     "test:golden": "node test-golden.js",
     "test:vsdx": "node test-vsdx.js",
-    "test": "node test.js && node test-golden.js && node test-vsdx.js",
+    "test:behavior": "node test-behavior.js",
+    "test": "node test.js && node test-golden.js && node test-vsdx.js && node test-behavior.js",
     "check": "npm run lint && npm run typecheck && npm test",
     "build": "node build.js",
     "preview": "node tools/preview.js"
