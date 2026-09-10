@@ -3,8 +3,9 @@
  * Native LibreOffice Draw export (flat ODG / .fodg) from the scene model.
  *
  * VSDX import in Draw turns connectors into paths, so they do not glue.
- * draw:connector with start/end shape ids does, and draw:g keeps frames
- * together when a subnet is dragged.
+ * Two-point tile edges become draw:connector (glue). Polylines become
+ * draw:polyline — LibreOffice ignores svg:d on a glued connector and
+ * reroutes around groups. draw:g keeps frames together.
  */
 
 class OdgBuilder {
@@ -76,6 +77,12 @@ class OdgBuilder {
   <style:font-face style:name="Arial" svg:font-family="Arial" style:font-family-generic="swiss" style:font-pitch="variable"/>
  </office:font-face-decls>
  <office:styles>
+  <draw:layer-set>
+   <draw:layer draw:name="layout" draw:display="true" draw:protected="false"/>
+   <draw:layer draw:name="background" draw:display="true" draw:protected="false"/>
+   <draw:layer draw:name="controls" draw:display="true" draw:protected="false"/>
+   <draw:layer draw:name="measurelines" draw:display="true" draw:protected="false"/>
+  </draw:layer-set>
   ${dashDef}
   ${arrowDef}
   <style:style style:name="standard" style:family="graphic">
@@ -174,7 +181,7 @@ ${body}
         const h = this._cm(Math.max(shape.height, 1));
         const para = this._para(shape.textStyle || shape.style, shape.isContainer ? 'start' : 'center');
         const textXml = this._textContent(shape, para);
-        const common = `draw:style-name="${style}" draw:id="${id}" xml:id="${id}" svg:x="${x}cm" svg:y="${y}cm" svg:width="${w}cm" svg:height="${h}cm"`;
+        const common = `draw:style-name="${style}" draw:id="${id}" xml:id="${id}" draw:layer="layout" svg:x="${x}cm" svg:y="${y}cm" svg:width="${w}cm" svg:height="${h}cm"`;
 
         if (shape.type === 'ellipse' || shape.type === 'circle') {
             return `    <draw:ellipse ${common}>${textXml}</draw:ellipse>\n`;
@@ -231,7 +238,7 @@ ${body}
         const para = this._para(st, anchor);
         const paras = lines.map(l => `<text:p text:style-name="${para}">${this._esc(l)}</text:p>`).join('');
         const id = `id_t${i}`;
-        return `    <draw:rect draw:style-name="${style}" draw:id="${id}" xml:id="${id}" svg:x="${this._cm(xPx)}cm" svg:y="${this._cm(yPx)}cm" svg:width="${this._cm(widthPx)}cm" svg:height="${this._cm(heightPx)}cm">${paras}</draw:rect>\n`;
+        return `    <draw:rect draw:style-name="${style}" draw:id="${id}" xml:id="${id}" draw:layer="layout" svg:x="${this._cm(xPx)}cm" svg:y="${this._cm(yPx)}cm" svg:width="${this._cm(widthPx)}cm" svg:height="${this._cm(heightPx)}cm">${paras}</draw:rect>\n`;
     }
 
     /**
@@ -249,35 +256,51 @@ ${body}
             align: 'center',
             valign: 'middle'
         });
-        const a = pts[0];
-        const b = pts[pts.length - 1];
-        const x1 = this._cm(a.x - this.vb.x);
-        const y1 = this._cm(a.y - this.vb.y);
-        const x2 = this._cm(b.x - this.vb.x);
-        const y2 = this._cm(b.y - this.vb.y);
-        // LibreOffice ignores svg:d on a glued connector and then routes
-        // around groups. Glue only when both ends are tiles (straight line).
-        // Polylines and frame-glued edges keep the SVG route instead.
-        const poly = pts.length > 2;
-        const fromBox = conn.fromShape != null && !this.scene.shapes[conn.fromShape].isContainer;
-        const toBox = conn.toShape != null && !this.scene.shapes[conn.toShape].isContainer;
-        const glue = !poly && fromBox && toBox;
-        const start = (glue && conn.fromShape != null) ? ` draw:start-shape="${this.shapeXmlId[conn.fromShape]}"` : '';
-        const end = (glue && conn.toShape != null) ? ` draw:end-shape="${this.shapeXmlId[conn.toShape]}"` : '';
-        const type = poly ? 'lines' : 'line';
-        const path = pts.map((p, idx) => {
-            const x = this._hmmInt(p.x - this.vb.x);
-            const y = this._hmmInt(p.y - this.vb.y);
-            return `${idx === 0 ? 'M' : 'L'} ${x} ${y}`;
-        }).join(' ');
-        const d = ` svg:d="${path}"`;
         const id = `id_c${i}`;
         let label = '';
         if (conn.text) {
             const para = this._para(conn.style, 'center');
             label = `<text:p text:style-name="${para}">${this._esc(conn.text)}</text:p>`;
         }
-        return `    <draw:connector draw:style-name="${style}" draw:id="${id}" xml:id="${id}" draw:type="${type}"${start}${end} svg:x1="${x1}cm" svg:y1="${y1}cm" svg:x2="${x2}cm" svg:y2="${y2}cm"${d}>${label}</draw:connector>\n`;
+
+        // LibreOffice drops svg:d on draw:connector as soon as the edge is
+        // glued, then auto-routes around groups. A polyline keeps the SVG
+        // route. Two-point tile-to-tile edges stay connectors so they glue.
+        const poly = pts.length > 2;
+        const fromBox = conn.fromShape != null && !this.scene.shapes[conn.fromShape].isContainer;
+        const toBox = conn.toShape != null && !this.scene.shapes[conn.toShape].isContainer;
+        const glue = !poly && fromBox && toBox;
+        if (poly) return this._polyline(conn, style, id, label);
+
+        const a = pts[0];
+        const b = pts[pts.length - 1];
+        const start = glue ? ` draw:start-shape="${this.shapeXmlId[conn.fromShape]}"` : '';
+        const end = glue ? ` draw:end-shape="${this.shapeXmlId[conn.toShape]}"` : '';
+        return `    <draw:connector draw:style-name="${style}" draw:id="${id}" xml:id="${id}" draw:layer="layout" draw:type="line"${start}${end} svg:x1="${this._cm(a.x - this.vb.x)}cm" svg:y1="${this._cm(a.y - this.vb.y)}cm" svg:x2="${this._cm(b.x - this.vb.x)}cm" svg:y2="${this._cm(b.y - this.vb.y)}cm">${label}</draw:connector>\n`;
+    }
+
+    /**
+     * @param {any} conn
+     * @param {string} style
+     * @param {string} id
+     * @param {string} label
+     */
+    _polyline(conn, style, id, label) {
+        const pts = conn.points;
+        const xs = pts.map((p) => p.x - this.vb.x);
+        const ys = pts.map((p) => p.y - this.vb.y);
+        const minX = Math.min.apply(null, xs);
+        const minY = Math.min.apply(null, ys);
+        const w = Math.max(Math.max.apply(null, xs) - minX, 1);
+        const h = Math.max(Math.max.apply(null, ys) - minY, 1);
+        const vbW = Math.max(this._hmmInt(w), 1);
+        const vbH = Math.max(this._hmmInt(h), 1);
+        const points = pts.map((p) => {
+            const x = this._hmmInt((p.x - this.vb.x) - minX);
+            const y = this._hmmInt((p.y - this.vb.y) - minY);
+            return `${x},${y}`;
+        }).join(' ');
+        return `    <draw:polyline draw:style-name="${style}" draw:id="${id}" xml:id="${id}" draw:layer="layout" svg:x="${this._cm(minX)}cm" svg:y="${this._cm(minY)}cm" svg:width="${this._cm(w)}cm" svg:height="${this._cm(h)}cm" svg:viewBox="0 0 ${vbW} ${vbH}" draw:points="${points}">${label}</draw:polyline>\n`;
     }
 
     /**
@@ -330,7 +353,7 @@ ${body}
         const bold = weight === 'bold' || Number(weight) >= 700;
         const align = anchor === 'middle' ? 'center' : anchor === 'end' ? 'end' : 'start';
         const key = `p|${fs}|${color}|${bold}|${align}`;
-        if (this.styleCache.has(key)) return this.styleCache.get(key);
+        if (this.styleCache.has(key)) return /** @type {string} */ (this.styleCache.get(key));
         const name = 'P' + (++this.styleSeq);
         const pt = this._n(fs * 72 / 96);
         this.autoStyles.push(

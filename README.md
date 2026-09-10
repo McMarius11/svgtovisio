@@ -115,6 +115,10 @@ only way to see what Visio will draw without owning Visio.
 `test-export.js` builds a `.drawio` and a `.fodg` for every sample and checks
 that edges are glued, frames are groups, and polyline waypoints survive.
 
+`npm run test:render` (needs draw.io desktop and LibreOffice) exports every
+sample, renders PNG from both apps, and moves a glued box to confirm the
+arrows follow.
+
 ## License
 
 [MIT](LICENSE) — Third-party licenses: [THIRD-PARTY-LICENSES](THIRD-PARTY-LICENSES)

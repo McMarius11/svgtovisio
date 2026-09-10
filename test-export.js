@@ -66,6 +66,10 @@ function checkDrawio(xml, scene, file) {
         assert(nested > 0, `${file} draw.io nests children under frames (${nested})`);
     }
 
+    const edgeOnPage = edges.filter(e => e.getAttribute('parent') === '1').length;
+    assert(edgeOnPage === edges.length,
+        `${file} draw.io edges sit on the page (${edgeOnPage}/${edges.length})`);
+
     const withWaypoints = edges.filter(e => e.querySelector('Array')).length;
     const poly = scene.connectors.filter(c => (c.points || []).length > 2).length;
     assert(withWaypoints === poly,
@@ -77,8 +81,13 @@ function checkOdg(xml, scene, file) {
     assert(err === null, `${file} .fodg is well-formed${err ? ' (' + err + ')' : ''}`);
 
     const connectors = (xml.match(/<draw:connector\b/g) || []).length;
-    assert(connectors === scene.connectors.length,
-        `${file} fodg has a draw:connector per edge (${connectors}/${scene.connectors.length})`);
+    const polylines = (xml.match(/<draw:polyline\b/g) || []).length;
+    const routes = connectors + polylines;
+    assert(routes === scene.connectors.length,
+        `${file} fodg has a route per edge (${connectors} connectors + ${polylines} polylines = ${routes}/${scene.connectors.length})`);
+    const scenePoly = scene.connectors.filter(c => (c.points || []).length > 2).length;
+    assert(polylines === scenePoly,
+        `${file} fodg polylines match multi-point connectors (${polylines}/${scenePoly})`);
 
     const glueable = (c) => {
         if ((c.points || []).length > 2) return false;
@@ -160,6 +169,8 @@ function checkOdg(xml, scene, file) {
         const fodg = new OdgBuilder(scene).build();
         assert(/draw:start-shape="id_s0"/.test(fodg) && /draw:end-shape="id_s1"/.test(fodg),
             'two-box fodg connector names both boxes');
+        const edgeParent = edge && edge.getAttribute('parent');
+        assert(edgeParent === '1', 'two-box draw.io edge is parented to the page');
     }
 
     console.log(`\n${passed} passed, ${failed} failed`);

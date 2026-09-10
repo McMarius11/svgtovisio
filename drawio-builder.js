@@ -25,8 +25,6 @@ class DrawioBuilder {
         this.childShapes = new Map();
         /** @type {Map<number|null, number[]>} */
         this.childTexts = new Map();
-        /** @type {Map<number|null, number[]>} */
-        this.childConnectors = new Map();
     }
 
     /** @returns {string} */
@@ -37,13 +35,16 @@ class DrawioBuilder {
         this.connectorCell = this.scene.connectors.map(() => this._id());
         this.childShapes = new Map();
         this.childTexts = new Map();
-        this.childConnectors = new Map();
         this.scene.shapes.forEach((s, i) => this._add(this.childShapes, s.parentShape, i));
         this.scene.texts.forEach((t, i) => this._add(this.childTexts, t.parentShape, i));
-        this.scene.connectors.forEach((c, i) => this._add(this.childConnectors, c.parentShape, i));
 
         const cells = ['<mxCell id="0"/>', '<mxCell id="1" parent="0"/>'];
         this._emitTree(null, '1', { x: this.vb.x, y: this.vb.y }, cells);
+        // Edges live on the page. Nested in a group, glue double-moves when
+        // the frame is dragged; mxGraph expects source/target on the default
+        // parent and waypoints in page coordinates.
+        const pageOrigin = { x: this.vb.x, y: this.vb.y };
+        this.scene.connectors.forEach((_, i) => this._emitConnector(i, '1', pageOrigin, cells));
 
         const pw = Math.max(1, Math.round(this.vb.width));
         const ph = Math.max(1, Math.round(this.vb.height));
@@ -92,9 +93,6 @@ class DrawioBuilder {
         for (const i of (this.childTexts.get(parentIndex) || [])) {
             this._emitText(i, parentId, origin, cells);
         }
-        for (const i of (this.childConnectors.get(parentIndex) || [])) {
-            this._emitConnector(i, parentId, origin, cells);
-        }
     }
 
     /**
@@ -113,7 +111,7 @@ class DrawioBuilder {
         const style = this._shapeStyle(shape);
         const value = this._shapeValue(shape);
         cells.push(
-            `<mxCell id="${id}" parent="${parentId}" vertex="1" value="${this._esc(value)}" style="${style}">` +
+            `<mxCell id="${id}" parent="${parentId}" vertex="1" value="${this._html(value)}" style="${style}">` +
             `<mxGeometry x="${x}" y="${y}" width="${w}" height="${h}" as="geometry"/>` +
             `</mxCell>`
         );
@@ -158,7 +156,6 @@ class DrawioBuilder {
     _shapeValue(shape) {
         const runs = this._runs(shape.textRuns, shape.text);
         if (!runs.length) return '';
-        if (runs.length === 1) return runs[0].text;
         return runs.map(r => r.text).join('\n');
     }
 
@@ -204,7 +201,7 @@ class DrawioBuilder {
             'overflow=visible', 'verticalAlign=bottom'];
         this._font(parts, st, align, 'bottom');
         cells.push(
-            `<mxCell id="${id}" parent="${parentId}" vertex="1" value="${this._esc(raw)}" style="${parts.join(';')};">` +
+            `<mxCell id="${id}" parent="${parentId}" vertex="1" value="${this._html(raw)}" style="${parts.join(';')};">` +
             `<mxGeometry x="${this._n(x)}" y="${this._n(y)}" width="${this._n(width)}" height="${this._n(height)}" as="geometry"/>` +
             `</mxCell>`
         );
@@ -234,11 +231,11 @@ class DrawioBuilder {
         const tgt = conn.toShape != null ? this.shapeCell[conn.toShape] : null;
         if (src != null && conn.fromShape != null) {
             const ex = this._port(this.scene.shapes[conn.fromShape], pts[0]);
-            parts.push(`exitX=${ex.x}`, `exitY=${ex.y}`, 'exitPerimeter=0');
+            parts.push(`exitX=${ex.x}`, `exitY=${ex.y}`, 'exitPerimeter=1');
         }
         if (tgt != null && conn.toShape != null) {
             const en = this._port(this.scene.shapes[conn.toShape], pts[pts.length - 1]);
-            parts.push(`entryX=${en.x}`, `entryY=${en.y}`, 'entryPerimeter=0');
+            parts.push(`entryX=${en.x}`, `entryY=${en.y}`, 'entryPerimeter=1');
         }
         const srcAttr = src != null ? ` source="${src}"` : '';
         const tgtAttr = tgt != null ? ` target="${tgt}"` : '';
@@ -256,7 +253,7 @@ class DrawioBuilder {
                 `<mxPoint x="${this._n(a.x - origin.x)}" y="${this._n(a.y - origin.y)}" as="sourcePoint"/>` +
                 `<mxPoint x="${this._n(b.x - origin.x)}" y="${this._n(b.y - origin.y)}" as="targetPoint"/>`;
         }
-        const value = conn.text ? this._esc(conn.text) : '';
+        const value = conn.text ? this._html(conn.text) : '';
         cells.push(
             `<mxCell id="${id}" parent="${parentId}" edge="1"${srcAttr}${tgtAttr} value="${value}" style="${parts.join(';')};">` +
             `<mxGeometry relative="1" as="geometry">${geoInner}</mxGeometry>` +
@@ -390,7 +387,16 @@ class DrawioBuilder {
             .replace(/&/g, '&amp;')
             .replace(/</g, '&lt;')
             .replace(/>/g, '&gt;')
-            .replace(/"/g, '&quot;')
-            .replace(/\n/g, '&#xa;');
+            .replace(/"/g, '&quot;');
+    }
+
+    /**
+     * html=1 values: each source line is escaped text, joined with &lt;br/&gt;.
+     * A raw newline in an attribute is legal XML but draw.io treats &lt;br/&gt;
+     * as the line break.
+     * @param {string} s
+     */
+    _html(s) {
+        return String(s).split('\n').map((line) => this._esc(line)).join('&lt;br/&gt;');
     }
 }
