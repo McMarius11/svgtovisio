@@ -32,7 +32,7 @@ export default [
             // ESLint cannot see across files, so name the public surface here.
             'no-unused-vars': ['error', {
                 argsIgnorePattern: '^_',
-                varsIgnorePattern: '^(SceneModel|SceneLayout|SvgTransform|SvgStyleResolver|SvgParser|DrawioParser|VsdxBuilder)$'
+                varsIgnorePattern: '^(SceneModel|SceneLayout|SvgTransform|SvgStyleResolver|SvgParser|DrawioParser|VsdxBuilder|DrawioBuilder|OdgBuilder)$'
             }],
             'no-implicit-globals': 'error',
             'no-console': 'off'
@@ -40,7 +40,7 @@ export default [
     },
     {
         // These files are CommonJS modules, not page scripts
-        files: ['build.js', 'test.js', 'test-golden.js', 'test-vsdx.js', 'test-behavior.js', 'tools/*.js'],
+        files: ['build.js', 'test.js', 'test-golden.js', 'test-vsdx.js', 'test-behavior.js', 'test-export.js', 'tools/*.js'],
         languageOptions: { sourceType: 'commonjs' }
     },
     {

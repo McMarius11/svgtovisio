@@ -1,7 +1,7 @@
 {
   "name": "svgtovisio",
   "version": "1.0.0",
-  "description": "Convert Claude-generated SVG diagrams to Visio (.vsdx) files",
+  "description": "Convert SVG and Draw.io diagrams to Visio (.vsdx), Draw.io (.drawio) and LibreOffice Draw (.fodg)",
   "scripts": {
     "start": "npx serve .",
     "lint": "eslint .",
@@ -10,7 +10,9 @@
     "test:golden": "node test-golden.js",
     "test:vsdx": "node test-vsdx.js",
     "test:behavior": "node test-behavior.js",
-    "test": "node test.js && node test-golden.js && node test-vsdx.js && node test-behavior.js",
+    "test:export": "node test-export.js",
+    "test": "node test.js && node test-golden.js && node test-vsdx.js && node test-behavior.js && node test-export.js",
+    "export": "node tools/export.js",
     "check": "npm run lint && npm run typecheck && npm test",
     "build": "node build.js",
     "preview": "node tools/preview.js"

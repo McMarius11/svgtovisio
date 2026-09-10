@@ -1,6 +1,6 @@
-# SVG & Draw.io to Visio Converter
+# SVG to Visio, Draw.io & LibreOffice
 
-Convert SVG diagrams and Draw.io files to editable Visio (.vsdx) files — directly in your browser. No server, no upload, no installation.
+Convert SVG diagrams and Draw.io files to editable Visio (`.vsdx`), Draw.io (`.drawio`) and LibreOffice Draw (`.fodg`) files — directly in your browser. No server, no upload, no installation.
 
 **[Use it now](https://McMarius11.github.io/svgtovisio)**
 
@@ -10,15 +10,16 @@ Convert SVG diagrams and Draw.io files to editable Visio (.vsdx) files — direc
 - **Draw.io support** — Import `.drawio` and `.xml` files (including compressed diagrams)
 - **Live preview** — See your diagram rendered before converting
 - **Fully client-side** — Everything runs in the browser, your data never leaves your machine
-- **Editable output** — Shapes, connectors, and text in the `.vsdx` are fully editable in Microsoft Visio
+- **Three exports** — `.vsdx` (Visio), `.drawio` (draw.io / diagrams.net), `.fodg` (LibreOffice Draw)
+- **Editable output** — Shapes, groups and connectors, not a flattened picture
 
 ## How to use
 
 1. Open the [converter](https://McMarius11.github.io/svgtovisio)
 2. Drag & drop a file (`.svg`, `.drawio`, `.xml`) or paste the markup
 3. Check the live preview
-4. Click **Convert to .vsdx**
-5. Open the downloaded file in Microsoft Visio — all shapes and arrows are fully editable
+4. Click **Convert to .vsdx**, **.drawio** or **.fodg**
+5. Open the file in Visio, draw.io or LibreOffice Draw — shapes, groups and arrows stay editable
 
 ## What gets preserved
 
@@ -47,8 +48,9 @@ between the stages:
 
 ```
  .svg  ->  SvgParser     \
-                          >  Scene  ->  SceneLayout  ->  VsdxBuilder  ->  .vsdx
- .drawio -> DrawioParser /
+                          >  Scene  ->  SceneLayout  ->  VsdxBuilder    -> .vsdx
+ .drawio -> DrawioParser /                         \->  DrawioBuilder  -> .drawio
+                                                   \->  OdgBuilder     -> .fodg
 ```
 
 | File | Role | Needs a DOM |
@@ -60,6 +62,8 @@ between the stages:
 | `drawio-parser.js` | Walks the Draw.io model and produces a scene | yes |
 | `scene-layout.js` | Frame detection, label assignment, nesting, connector gluing | no |
 | `vsdx-builder.js` | Scene to an OPC package | no |
+| `drawio-builder.js` | Scene to native mxGraph XML | no |
+| `odg-builder.js` | Scene to flat ODG (`.fodg`) | no |
 | `app.js` | Browser UI | yes |
 
 Two rules keep this honest:
@@ -82,6 +86,7 @@ npm run check        # lint + type-check + both test suites
 npm test             # unit/integration tests and golden-file snapshots
 npm run build        # regenerate dist/index.html
 npm run preview -- diagram.svg out.svg   # render what Visio will show
+node tools/export.js diagram.svg outdir  # write .vsdx, .drawio and .fodg
 ```
 
 To try a change in the browser, open `dist/index.html` directly after a build,
@@ -106,6 +111,9 @@ in JSDoc comments, so the files stay plain JavaScript.
 
 `tools/preview.js` renders the generated Visio page back to SVG, which is the
 only way to see what Visio will draw without owning Visio.
+
+`test-export.js` builds a `.drawio` and a `.fodg` for every sample and checks
+that edges are glued, frames are groups, and polyline waypoints survive.
 
 ## License
 

@@ -1,5 +1,5 @@
 // @ts-check
-/* global SvgParser, DrawioParser, VsdxBuilder */
+/* global SvgParser, DrawioParser, VsdxBuilder, DrawioBuilder, OdgBuilder */
 /**
  * App - Ties together the UI, SVG parser, and VSDX builder.
  */
@@ -10,6 +10,8 @@
     const fileInput = /** @type {HTMLInputElement} */ (document.getElementById('fileInput'));
     const svgInput = /** @type {HTMLTextAreaElement} */ (document.getElementById('svgInput'));
     const convertBtn = /** @type {HTMLButtonElement} */ (document.getElementById('convertBtn'));
+    const drawioBtn = /** @type {HTMLButtonElement} */ (document.getElementById('drawioBtn'));
+    const odgBtn = /** @type {HTMLButtonElement} */ (document.getElementById('odgBtn'));
     const statusText = document.getElementById('statusText');
     const logEl = document.getElementById('log');
     const previewSection = document.getElementById('previewSection');
@@ -52,24 +54,37 @@
         if (val && val.includes('<svg')) {
             currentInput = val;
             currentFormat = 'svg';
-            convertBtn.disabled = false;
+            setReady(true);
             showPreview(val);
         } else if (val && (val.includes('<mxGraphModel') || val.includes('<mxfile'))) {
             currentInput = val;
             currentFormat = 'drawio';
-            convertBtn.disabled = false;
+            setReady(true);
             showDrawioPreview(currentInput);
             log('Draw.io XML detected', 'info');
         } else {
-            convertBtn.disabled = !currentInput;
+            setReady(!!currentInput);
         }
     });
 
-    // --- Convert button ---
     convertBtn.addEventListener('click', async () => {
         if (!currentInput) return;
-        await convert(currentInput, currentFormat);
+        await convert(currentInput, currentFormat, 'vsdx');
     });
+    drawioBtn.addEventListener('click', async () => {
+        if (!currentInput) return;
+        await convert(currentInput, currentFormat, 'drawio');
+    });
+    odgBtn.addEventListener('click', async () => {
+        if (!currentInput) return;
+        await convert(currentInput, currentFormat, 'fodg');
+    });
+
+    function setReady(on) {
+        convertBtn.disabled = !on;
+        drawioBtn.disabled = !on;
+        odgBtn.disabled = !on;
+    }
 
     function loadFile(file) {
         const name = file.name.toLowerCase();
@@ -99,7 +114,7 @@
                 log(`Loaded SVG: ${file.name} (${(file.size / 1024).toFixed(1)} KB)`, 'info');
             }
 
-            convertBtn.disabled = false;
+            setReady(true);
         };
         reader.readAsText(file);
     }
@@ -248,14 +263,18 @@
         }
     }
 
-    async function convert(inputString, format) {
+    /**
+     * @param {string} inputString
+     * @param {string} format
+     * @param {'vsdx'|'drawio'|'fodg'} target
+     */
+    async function convert(inputString, format, target) {
         logEl.style.display = 'block';
         logEl.innerHTML = '';
-        convertBtn.disabled = true;
+        setReady(false);
         statusText.textContent = 'Converting...';
 
         try {
-            // Parse input based on format
             const isDrawio = format === 'drawio';
             log(isDrawio ? 'Parsing Draw.io XML...' : 'Parsing SVG...', 'info');
 
@@ -268,18 +287,29 @@
             showWarnings(stats.warnings);
             (stats.warnings || []).forEach(w => log(w, 'warn'));
 
-            // Build VSDX
-            log('Building VSDX file...', 'info');
-            const builder = new VsdxBuilder(parsed);
-            const blob = await builder.build();
+            let blob;
+            let filename;
+            if (target === 'drawio') {
+                log('Building draw.io file...', 'info');
+                const xml = new DrawioBuilder(parsed).build();
+                blob = new Blob([xml], { type: 'application/xml' });
+                filename = 'diagram.drawio';
+            } else if (target === 'fodg') {
+                log('Building LibreOffice Draw file...', 'info');
+                const xml = new OdgBuilder(parsed).build();
+                blob = new Blob([xml], { type: 'application/vnd.oasis.opendocument.graphics-flat-xml' });
+                filename = 'diagram.fodg';
+            } else {
+                log('Building VSDX file...', 'info');
+                blob = await new VsdxBuilder(parsed).build();
+                filename = 'diagram.vsdx';
+            }
 
-            log(`Generated VSDX: ${(blob.size / 1024).toFixed(1)} KB`, 'success');
-
-            // Download
+            log(`Generated ${filename}: ${(blob.size / 1024).toFixed(1)} KB`, 'success');
             const url = URL.createObjectURL(blob);
             const a = document.createElement('a');
             a.href = url;
-            a.download = 'diagram.vsdx';
+            a.download = filename;
             document.body.appendChild(a);
             a.click();
             document.body.removeChild(a);
@@ -292,7 +322,7 @@
             statusText.textContent = 'Conversion failed.';
             console.error(err);
         } finally {
-            convertBtn.disabled = false;
+            setReady(true);
         }
     }
 

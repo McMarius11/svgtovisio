@@ -16,12 +16,14 @@ const SOURCES = [
     'svg-style.js',
     'svg-parser.js',
     'drawio-parser.js',
-    'vsdx-builder.js'
+    'vsdx-builder.js',
+    'drawio-builder.js',
+    'odg-builder.js'
 ];
 
 const EXPORTS = [
     'SceneModel', 'SceneLayout', 'SvgTransform', 'SvgStyleResolver',
-    'SvgParser', 'DrawioParser', 'VsdxBuilder'
+    'SvgParser', 'DrawioParser', 'VsdxBuilder', 'DrawioBuilder', 'OdgBuilder'
 ];
 
 function load() {
