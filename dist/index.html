@@ -3045,7 +3045,7 @@ ${shapesXml}
         // Geometry section
         switch (shape.type) {
             case 'rect':
-                sectionsXml += this._rectGeom();
+                sectionsXml += this._rectGeom(w, h, shape.style.rx * this.scale);
                 break;
             case 'circle':
             case 'ellipse':
@@ -3059,7 +3059,7 @@ ${shapesXml}
                 sectionsXml += this._polygonGeom(shape, w, h);
                 break;
             default:
-                sectionsXml += this._rectGeom();
+                sectionsXml += this._rectGeom(w, h, 0);
         }
 
         // Text: one character/paragraph run per source line, referenced from
@@ -3138,13 +3138,16 @@ ${cellsXml}${sectionsXml}${textXml}
     }
 
     /**
+    /**
      * A rectangle in relative coordinates, so it follows Width and Height.
      *
-     * Rounded corners are not drawn as arcs here: the Rounding cell rounds the
-     * corners of whatever path a shape has, and a constant radius survives a
-     * resize the way arc coordinates would not.
+     * @param {number} w width in inches, for the cached corner values
+     * @param {number} h
+     * @param {number} rx corner radius in inches, 0 for square corners
      */
-    _rectGeom() {
+    _rectGeom(w, h, rx) {
+        if (rx > 0) return this._roundedRectGeom(w, h, rx);
+
         return `
       <Section N="Geometry" IX="0">
         <Cell N="NoFill" V="0"/>
@@ -3154,6 +3157,48 @@ ${cellsXml}${sectionsXml}${textXml}
         <Row T="RelLineTo" IX="3"><Cell N="X" V="1"/><Cell N="Y" V="1"/></Row>
         <Row T="RelLineTo" IX="4"><Cell N="X" V="0"/><Cell N="Y" V="1"/></Row>
         <Row T="RelLineTo" IX="5"><Cell N="X" V="0"/><Cell N="Y" V="0"/></Row>
+      </Section>`;
+    }
+
+    /**
+     * A rounded rectangle, with the corners drawn as arcs.
+     *
+     * The Rounding cell would express this in one line, but it is a Visio
+     * refinement that other readers of the format ignore - libvisio, which
+     * LibreOffice and every Linux viewer use, draws such a shape with square
+     * corners - and a file whose rounded boxes are only round in Visio is not
+     * worth the shorter geometry. The arcs are drawn from the Rounding cell,
+     * so the radius stays editable in one place.
+     *
+     * The radius is a constant, because stretching a box should not fatten its
+     * corners, and it is clamped through MIN so a box dragged narrower than
+     * two radii still closes cleanly instead of turning inside out.
+     *
+     * A is the arc's bow: the distance from the arc's midpoint to the midpoint
+     * of its chord. For a quarter circle of radius r that is r(1 - 1/sqrt 2),
+     * and not the r(sqrt 2 - 1) this used to emit - a corner 41% too deep.
+     */
+    _roundedRectGeom(w, h, rx) {
+        const r = Math.min(rx, w / 2, h / 2);
+        const R = 'MIN(Rounding,Width/2,Height/2)';
+        const BOW = 1 - Math.SQRT1_2;
+        const cell = (name, value, formula) => this._geomCell(name, value, formula);
+        const arc = (x, fx, y, fy) =>
+            cell('X', x, fx) + cell('Y', y, fy) + cell('A', r * BOW, `${R}*${BOW}`);
+
+        return `
+      <Section N="Geometry" IX="0">
+        <Cell N="NoFill" V="0"/>
+        <Cell N="NoLine" V="0"/>
+        <Row T="MoveTo" IX="1">${cell('X', 0, '0')}${cell('Y', r, R)}</Row>
+        <Row T="ArcTo" IX="2">${arc(r, R, 0, '0')}</Row>
+        <Row T="LineTo" IX="3">${cell('X', w - r, `Width-${R}`)}${cell('Y', 0, '0')}</Row>
+        <Row T="ArcTo" IX="4">${arc(w, 'Width', r, R)}</Row>
+        <Row T="LineTo" IX="5">${cell('X', w, 'Width')}${cell('Y', h - r, `Height-${R}`)}</Row>
+        <Row T="ArcTo" IX="6">${arc(w - r, `Width-${R}`, h, 'Height')}</Row>
+        <Row T="LineTo" IX="7">${cell('X', r, R)}${cell('Y', h, 'Height')}</Row>
+        <Row T="ArcTo" IX="8">${arc(0, '0', h - r, `Height-${R}`)}</Row>
+        <Row T="LineTo" IX="9">${cell('X', 0, '0')}${cell('Y', r, R)}</Row>
       </Section>`;
     }
 
@@ -3186,7 +3231,7 @@ ${cellsXml}${sectionsXml}${textXml}
 
     _polygonGeom(shape, w, h) {
         if (!shape.points || shape.points.length < 3) {
-            return this._rectGeom();
+            return this._rectGeom(w, h, 0);
         }
 
         let xml = `

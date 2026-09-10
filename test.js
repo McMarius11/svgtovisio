@@ -430,9 +430,18 @@ assert(labelled && Math.abs(cellV(labelled, 'LeftMargin') - 4 / 96) < 1e-9,
     'text margins are in drawing units, not Visio\'s unscaled 4pt default');
 assert(/ IN\)/.test(cellF(labelled, 'TxtWidth')),
     'the text block formula names its unit, so a metric Visio reads it too');
-assert(cellV(labelled, 'Rounding') > 0 &&
-    editableDoc.querySelector('Row[T="ArcTo"]') === null,
-    'a rounded rect rounds via the Rounding cell, keeping a resizable outline');
+// Rounding alone would be shorter, but only Visio acts on it: libvisio,
+// which every Linux viewer uses, draws such a shape square. So the corners
+// are real arcs - and they still have to scale, which the frozen-cell check
+// above covers for every ArcTo row emitted here.
+const arcs = Array.from(editableDoc.querySelectorAll('Row[T="ArcTo"]'));
+assert(cellV(labelled, 'Rounding') > 0 && arcs.length === 4,
+    `a rounded rect is drawn with four real arcs (got ${arcs.length})`);
+assert(arcs.every(r => Array.from(r.querySelectorAll('Cell')).every(c => c.getAttribute('F'))),
+    'the arcs are formulas, so the corners survive a resize');
+assert(arcs.every(r => /MIN\(Rounding/.test(String(
+    (r.querySelector('Cell[N="A"]') || { getAttribute: () => '' }).getAttribute('F')))),
+    'the arc bow follows the Rounding cell, so the radius stays editable');
 
 // Test 16: frames hold their contents, connectors hold on to their shapes
 console.log('\n--- Test 16: Groups and 1-D connectors ---');
