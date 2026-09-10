@@ -116,6 +116,15 @@ assert(drawioArrows.length >= 5, `At least 5 connectors should have arrows (got 
 const edgeLabels = drawioResult.texts.filter(t => t.text === 'Yes' || t.text === 'No');
 assert(edgeLabels.length === 2, `Should have 2 edge labels (got ${edgeLabels.length})`);
 
+// Glue to the pin (shape centre) makes Visio draw the route through the box.
+// Endpoints sit on the bounding box, the way the SVG/draw.io edge is drawn.
+const startBox = drawioResult.shapes.find(s => s.text === 'Start');
+const startEdge = drawioResult.connectors.find(c => c.fromShape === drawioResult.shapes.indexOf(startBox));
+const onBottom = startBox && startEdge &&
+    Math.abs(startEdge.points[0].x - (startBox.x + startBox.width / 2)) < 1 &&
+    Math.abs(startEdge.points[0].y - (startBox.y + startBox.height)) < 1;
+assert(onBottom, 'a draw.io edge leaves the box at its edge, not its centre');
+
 // Test 5: Draw.io raw mxGraphModel (without mxfile wrapper)
 console.log('\n--- Test 5: Draw.io raw mxGraphModel ---');
 const rawDrawio = `<mxGraphModel>
@@ -202,7 +211,7 @@ const pageXml = new VsdxBuilder(result7)._page1();
 assert(pageXml.indexOf('N="FillForegnd" V="#FFFFFF"') !== -1, 'fill colour reaches the VSDX');
 assert(pageXml.indexOf('N="LineColor" V="#333333"') !== -1, 'stroke colour reaches the VSDX');
 assert(pageXml.indexOf('N="LineColor" V="#009640"') !== -1, 'connector colour reaches the VSDX');
-assert((pageXml.match(/<cp IX=/g) || []).length >= 2, 'per-line character runs are emitted');
+assert((pageXml.match(/<pp IX="1"/g) || []).length >= 1, 'per-line paragraph runs are emitted');
 assert(pageXml.indexOf('N="HorzAlign" V="0"') !== -1, 'left-aligned text is not force-centred');
 
 // Visio shows a missing-glyph box for any line-feed that is not the paragraph
@@ -210,9 +219,9 @@ assert(pageXml.indexOf('N="HorzAlign" V="0"') !== -1, 'left-aligned text is not 
 // that are reused. Each source line is therefore its own sequential run,
 // cp before pp, with &#10; before every paragraph after the first.
 const nodeAText = (pageXml.match(/<Text>[^]*?Node A[^]*?<\/Text>/) || [])[0] || '';
-assert(/<cp IX="0"\/><pp IX="0"\/>Node A/.test(nodeAText),
-    'the first line starts with cp then pp, the order Visio writes');
-assert(/Node A&#10;<cp IX="1"\/><pp IX="1"\/>detail line/.test(nodeAText),
+assert(/^<Text>Node A/.test(nodeAText),
+    'the first line is plain text; a leading cp/pp is drawn as a missing glyph');
+assert(/Node A&#10;<pp IX="1"\/><cp IX="1"\/>detail line/.test(nodeAText),
     'the next line is a paragraph break, not a leftover newline glyph');
 assert(!/\n/.test(nodeAText.replace(/&#10;/g, '')),
     'the Text element holds no raw line feeds for Visio to draw as boxes');
@@ -228,7 +237,7 @@ const twoLineDrawio = `<mxGraphModel>
 </mxGraphModel>`;
 const floatingXml = new VsdxBuilder(new DrawioParser(twoLineDrawio).parse())._page1();
 const floatingText = (floatingXml.match(/<Text>[^]*?First[^]*?<\/Text>/) || [])[0] || '';
-assert(/<cp IX="0"\/><pp IX="0"\/>First&#10;<cp IX="1"\/><pp IX="1"\/>Second/.test(floatingText),
+assert(/^<Text>First&#10;<pp IX="1"\/><cp IX="1"\/>Second/.test(floatingText),
     'a draw.io label with &#xa; becomes two Visio paragraphs, not a newline glyph');
 
 // Test 9: transforms, references, paint servers, markers

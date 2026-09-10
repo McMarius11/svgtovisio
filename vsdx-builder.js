@@ -325,8 +325,9 @@ class VsdxBuilder {
      * @param {{text: string, style: any}[]} runs
      * @param {number} w shape width in inches
      * @param {number} h shape height in inches
+     * @param {number} [vertAlign] 0 top, 1 middle, 2 bottom
      */
-    _textBlockCells(runs, w, h) {
+    _textBlockCells(runs, w, h, vertAlign) {
         const margin = this.textMargin;
         let needW = 0;
         let needH = 2 * margin;
@@ -354,7 +355,7 @@ class VsdxBuilder {
       <Cell N="RightMargin" V="${margin}"/>
       <Cell N="TopMargin" V="${margin}"/>
       <Cell N="BottomMargin" V="${margin}"/>
-      <Cell N="VerticalAlign" V="1"/>
+      <Cell N="VerticalAlign" V="${vertAlign == null ? 1 : vertAlign}"/>
       <Cell N="TxtWidth" V="${txtW}"/>
       <Cell N="TxtHeight" V="${txtH}"/>
       <Cell N="TxtPinX" V="${w * pin}"/>
@@ -399,8 +400,11 @@ class VsdxBuilder {
         <Row IX="${i}">
           <Cell N="HorzAlign" V="${align}"/>
         </Row>`;
-            if (i > 0) body += '&#10;';
-            body += `<cp IX="${i}"/><pp IX="${i}"/>${this._xmlEscape(lines[i].text)}`;
+            // A leading <cp>/<pp> is drawn as a missing-glyph box that eats
+            // the first letter. Later paragraphs start with a line feed then
+            // pp (required) then cp, the order Visio writes.
+            if (i === 0) body += this._xmlEscape(lines[i].text);
+            else body += `&#10;<pp IX="${i}"/><cp IX="${i}"/>${this._xmlEscape(lines[i].text)}`;
         }
         return { charRows, paraRows, body };
     }
@@ -690,7 +694,7 @@ class VsdxBuilder {
         if (this.connectorLinks.length > 0) {
             connectsXml = '\n  <Connects>';
             for (const link of this.connectorLinks) {
-                connectsXml += `\n    <Connect FromSheet="${link.connectorId}" FromCell="${link.cell}" FromPart="${link.fromPart}" ToSheet="${link.targetId}" ToCell="PinX" ToPart="${link.toPart}"/>`;
+                connectsXml += `\n    <Connect FromSheet="${link.connectorId}" FromCell="${link.cell}" FromPart="${link.fromPart}" ToSheet="${link.targetId}" ToCell="${link.toCell}" ToPart="${link.toPart}"/>`;
             }
             connectsXml += '\n  </Connects>';
         }
@@ -711,23 +715,77 @@ ${shapesXml}
      * <Connects> lives on the page whatever depth the shapes sit at, so this
      * runs for every connector, nested or not.
      */
+    /**
+     * Four edge midpoints, Visio local (origin bottom-left). Row IX 0..3 =
+     * top, right, bottom, left; ToPart is 100+IX.
+     */
+    _connectionSection(w, h) {
+        const rows = [
+            { x: w / 2, y: h, xf: 'Width*0.5', yf: 'Height' },
+            { x: w, y: h / 2, xf: 'Width', yf: 'Height*0.5' },
+            { x: w / 2, y: 0, xf: 'Width*0.5', yf: '0' },
+            { x: 0, y: h / 2, xf: '0', yf: 'Height*0.5' }
+        ];
+        let xml = `
+      <Section N="Connection">`;
+        rows.forEach((r, i) => {
+            xml += `
+        <Row T="Connection" IX="${i}">
+          <Cell N="X" V="${r.x}" F="${r.xf}"/>
+          <Cell N="Y" V="${r.y}" F="${r.yf}"/>
+        </Row>`;
+        });
+        xml += `
+      </Section>`;
+        return xml;
+    }
+
+    /** Closest of the four edge midpoints to a page-space Visio point. */
+    _nearestConnection(shape, pagePt) {
+        const box = this._shapeBox(shape);
+        const cps = [
+            { ix: 0, x: box.left + box.w / 2, y: box.bottom + box.h },
+            { ix: 1, x: box.left + box.w, y: box.bottom + box.h / 2 },
+            { ix: 2, x: box.left + box.w / 2, y: box.bottom },
+            { ix: 3, x: box.left, y: box.bottom + box.h / 2 }
+        ];
+        let best = cps[0];
+        let bestD = Infinity;
+        for (const c of cps) {
+            const d = (c.x - pagePt.x) ** 2 + (c.y - pagePt.y) ** 2;
+            if (d < bestD) {
+                bestD = d;
+                best = c;
+            }
+        }
+        return best;
+    }
+
     _trackGlue(conn, id) {
+        const begin = conn.points[0];
+        const end = conn.points[conn.points.length - 1];
+        const beginV = { x: this._svgToVisioX(begin.x), y: this._svgToVisioY(begin.y) };
+        const endV = { x: this._svgToVisioX(end.x), y: this._svgToVisioY(end.y) };
         if (conn.fromShape !== null) {
+            const cp = this._nearestConnection(this.data.shapes[conn.fromShape], beginV);
             this.connectorLinks.push({
                 connectorId: id,
                 cell: 'BeginX',
                 fromPart: 9,
                 targetId: this.shapeIds[conn.fromShape],
-                toPart: 3
+                toPart: 100 + cp.ix,
+                toCell: 'Connections.X' + (cp.ix + 1)
             });
         }
         if (conn.toShape !== null) {
+            const cp = this._nearestConnection(this.data.shapes[conn.toShape], endV);
             this.connectorLinks.push({
                 connectorId: id,
                 cell: 'EndX',
                 fromPart: 12,
                 targetId: this.shapeIds[conn.toShape],
-                toPart: 3
+                toPart: 100 + cp.ix,
+                toCell: 'Connections.X' + (cp.ix + 1)
             });
         }
     }
@@ -885,6 +943,10 @@ ${shapesXml}
                 sectionsXml += this._rectGeom(w, h, 0);
         }
 
+        // Perimeter glue points. Gluing to PinX (the centre) makes Visio
+        // route the connector through the tile instead of to its edge.
+        sectionsXml += this._connectionSection(w, h);
+
         // Text: one character/paragraph run per source line, referenced from
         // <Text> via <cp>/<pp>, so a heading and its detail lines keep their
         // own size, weight, colour and alignment inside a single shape.
@@ -894,7 +956,7 @@ ${shapesXml}
                 : [{ text: shape.text, style: shape.textStyle || {} }];
             const text = this._textRunsXml(runs);
 
-            cellsXml += this._textBlockCells(runs, w, h);
+            cellsXml += this._textBlockCells(runs, w, h, shape.isContainer ? 0 : 1);
 
             sectionsXml += `
       <Section N="Character">${text.charRows}

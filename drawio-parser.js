@@ -303,30 +303,30 @@ class DrawioParser {
         }
     }
 
+    /**
+     * Where a line from the box centre toward `toward` hits the rectangle.
+     * Centres make Visio draw the connector through the shape.
+     */
+    _boxEdgePoint(shape, toward) {
+        const cx = shape.x + shape.width / 2;
+        const cy = shape.y + shape.height / 2;
+        const dx = toward.x - cx;
+        const dy = toward.y - cy;
+        if (dx === 0 && dy === 0) return { x: cx, y: cy };
+        const tx = dx === 0 ? Infinity : (shape.width / 2) / Math.abs(dx);
+        const ty = dy === 0 ? Infinity : (shape.height / 2) / Math.abs(dy);
+        const t = Math.min(tx, ty);
+        return { x: cx + dx * t, y: cy + dy * t };
+    }
+
     _getEdgePoints(cell, sourceId, targetId) {
-        const points = [];
         const geom = cell.querySelector('mxGeometry');
-
-        // Source point
-        if (sourceId && this.cellIdToShapeIndex[sourceId] !== undefined) {
-            const shape = this.shapes[this.cellIdToShapeIndex[sourceId]];
-            points.push({ x: shape.x + shape.width / 2, y: shape.y + shape.height / 2 });
-        } else if (geom) {
-            const srcPt = geom.querySelector('mxPoint[as="sourcePoint"]');
-            if (srcPt) {
-                points.push({
-                    x: parseFloat(srcPt.getAttribute('x')) || 0,
-                    y: parseFloat(srcPt.getAttribute('y')) || 0
-                });
-            }
-        }
-
-        // Intermediate waypoints
+        const waypoints = [];
         if (geom) {
-            const waypoints = geom.querySelector('Array[as="points"]');
-            if (waypoints) {
-                for (const pt of waypoints.querySelectorAll('mxPoint')) {
-                    points.push({
+            const arr = geom.querySelector('Array[as="points"]');
+            if (arr) {
+                for (const pt of arr.querySelectorAll('mxPoint')) {
+                    waypoints.push({
                         x: parseFloat(pt.getAttribute('x')) || 0,
                         y: parseFloat(pt.getAttribute('y')) || 0
                     });
@@ -334,20 +334,52 @@ class DrawioParser {
             }
         }
 
-        // Target point
-        if (targetId && this.cellIdToShapeIndex[targetId] !== undefined) {
-            const shape = this.shapes[this.cellIdToShapeIndex[targetId]];
-            points.push({ x: shape.x + shape.width / 2, y: shape.y + shape.height / 2 });
+        const srcShape = sourceId && this.cellIdToShapeIndex[sourceId] !== undefined
+            ? this.shapes[this.cellIdToShapeIndex[sourceId]] : null;
+        const tgtShape = targetId && this.cellIdToShapeIndex[targetId] !== undefined
+            ? this.shapes[this.cellIdToShapeIndex[targetId]] : null;
+
+        const srcCentre = srcShape
+            ? { x: srcShape.x + srcShape.width / 2, y: srcShape.y + srcShape.height / 2 }
+            : null;
+        const tgtCentre = tgtShape
+            ? { x: tgtShape.x + tgtShape.width / 2, y: tgtShape.y + tgtShape.height / 2 }
+            : null;
+
+        let srcPt = null;
+        if (srcShape) {
+            const toward = waypoints[0] || tgtCentre || srcCentre;
+            srcPt = this._boxEdgePoint(srcShape, toward);
         } else if (geom) {
-            const tgtPt = geom.querySelector('mxPoint[as="targetPoint"]');
-            if (tgtPt) {
-                points.push({
-                    x: parseFloat(tgtPt.getAttribute('x')) || 0,
-                    y: parseFloat(tgtPt.getAttribute('y')) || 0
-                });
+            const el = geom.querySelector('mxPoint[as="sourcePoint"]');
+            if (el) {
+                srcPt = {
+                    x: parseFloat(el.getAttribute('x')) || 0,
+                    y: parseFloat(el.getAttribute('y')) || 0
+                };
             }
         }
 
+        let tgtPt = null;
+        if (tgtShape) {
+            const toward = waypoints.length
+                ? waypoints[waypoints.length - 1]
+                : srcCentre || tgtCentre;
+            tgtPt = this._boxEdgePoint(tgtShape, toward);
+        } else if (geom) {
+            const el = geom.querySelector('mxPoint[as="targetPoint"]');
+            if (el) {
+                tgtPt = {
+                    x: parseFloat(el.getAttribute('x')) || 0,
+                    y: parseFloat(el.getAttribute('y')) || 0
+                };
+            }
+        }
+
+        const points = [];
+        if (srcPt) points.push(srcPt);
+        for (const w of waypoints) points.push(w);
+        if (tgtPt) points.push(tgtPt);
         return points;
     }
 
