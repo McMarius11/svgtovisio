@@ -2885,9 +2885,10 @@ class VsdxBuilder {
      * @param {{text: string, style: any}[]} runs
      * @param {number} w parent width in inches
      * @param {number} h parent height in inches
-     * @param {number} _parentId unused; pins are values so the user can drag a line out
+     * @param {number} ox lower-left of the tile in the parent, inches
+     * @param {number} oy
      */
-    _lineTextShapes(runs, w, h, _parentId) {
+    _lineTextShapes(runs, w, h, ox, oy) {
         const margin = this.textMargin;
         let yFromTop = margin;
         let xml = '';
@@ -2901,9 +2902,9 @@ class VsdxBuilder {
                 Math.max(this._lineWidthInches(run.text, size, bold) + 2 * margin, 0.2)
             );
             const lineH = 2 * margin + size * 1.2;
-            const pinX = align === 1 ? w / 2 : (align === 2 ? w - margin : margin);
+            const pinX = ox + (align === 1 ? w / 2 : (align === 2 ? w - margin : margin));
             const locPinX = align === 1 ? lineW / 2 : (align === 2 ? lineW : 0);
-            const pinY = h - yFromTop - 0.8 * size;
+            const pinY = oy + h - yFromTop - 0.8 * size;
             const locPinY = lineH / 2 - 0.35 * size;
             yFromTop += size * 1.5;
             const one = this._textRunsXml([run]);
@@ -3343,7 +3344,8 @@ ${shapesXml}
         const kidConns = this.childConnectors.get(index) || [];
 
         if (!kidShapes.length && !kidTexts.length && !kidConns.length) {
-            return this._buildShape(shape, this.shapeIds[index], origin, '');
+            const xml = this._buildShape(shape, this.shapeIds[index], origin, '');
+            return xml + (this._afterShapeXml || '');
         }
 
         // A group's children are placed in the group's own coordinate system,
@@ -3398,6 +3400,7 @@ ${shapesXml}
         const lineColor = this._colorToRGB(shape.style.stroke);
         const lineWeight = (shape.style.strokeWidth || 1) * this.scale;
 
+        this._afterShapeXml = '';
         let cellsXml = '';
         let sectionsXml = '';
         let textXml = '';
@@ -3489,8 +3492,16 @@ ${shapesXml}
       </Section>`;
                 textXml = `
       <Text>${text.body}</Text>`;
+            } else if (childXml) {
+                // Already a frame: title lines live in the group.
+                childXml += this._lineTextShapes(runs, w, h, 0, 0);
             } else {
-                childXml += this._lineTextShapes(runs, w, h, id);
+                // A labelled tile stays a Shape, not a group-of-text. The
+                // extra lines sit next to it in the parent, so a click hits
+                // the box or a line instead of a nested group.
+                const ox = box.left - origin.x;
+                const oy = box.bottom - origin.y;
+                this._afterShapeXml = this._lineTextShapes(runs, w, h, ox, oy);
             }
         }
 

@@ -229,6 +229,13 @@ const twoLineDrawio = `<mxGraphModel>
 const floatingXml = new VsdxBuilder(new DrawioParser(twoLineDrawio).parse())._page1();
 assert(/<Text>First<\/Text>/.test(floatingXml) && /<Text>Second<\/Text>/.test(floatingXml),
     'a draw.io label with &#xa; becomes two Visio text shapes, not a newline glyph');
+const twoLineDoc = domParser.parseFromString(floatingXml, 'application/xml');
+const twoLineBox = Array.from(twoLineDoc.querySelectorAll('Shape')).find(s => {
+    const w = cellV(s, 'Width');
+    return w && Math.abs(w - 120 / 96) < 1e-6 && s.getAttribute('Type');
+});
+assert(twoLineBox && twoLineBox.getAttribute('Type') === 'Shape',
+    'a labelled tile is a shape, not a nested group of its own lines');
 assert(!/N="PinX"[^>]*F="Sheet\./.test(floatingXml),
     'extra label lines are not formula-glued to the tile, so they can be dragged out');
 
