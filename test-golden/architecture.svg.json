@@ -3,8 +3,9 @@
     {
       "arrowEnd": true,
       "arrowStart": false,
-      "fromShape": null,
+      "fromShape": 0,
       "id": null,
+      "parentShape": null,
       "points": [
         {
           "x": 400,
@@ -39,6 +40,7 @@
       "arrowStart": false,
       "fromShape": 4,
       "id": null,
+      "parentShape": null,
       "points": [
         {
           "x": 400,
@@ -65,7 +67,7 @@
         "textAnchor": "start"
       },
       "text": null,
-      "toShape": null,
+      "toShape": 5,
       "type": "line"
     },
     {
@@ -73,6 +75,7 @@
       "arrowStart": false,
       "fromShape": 6,
       "id": null,
+      "parentShape": null,
       "points": [
         {
           "x": 175,
@@ -107,6 +110,7 @@
       "arrowStart": false,
       "fromShape": 8,
       "id": null,
+      "parentShape": null,
       "points": [
         {
           "x": 395,
@@ -141,6 +145,7 @@
       "arrowStart": false,
       "fromShape": 9,
       "id": null,
+      "parentShape": null,
       "points": [
         {
           "x": 615,

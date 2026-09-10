@@ -5,6 +5,7 @@
       "arrowStart": false,
       "fromShape": 2,
       "id": null,
+      "parentShape": null,
       "points": [
         {
           "x": 175,

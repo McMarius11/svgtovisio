@@ -453,11 +453,14 @@ class VsdxBuilder {
         // frames deep, and <Connects> needs that ID before the tree is walked.
         this.shapeIds = this.data.shapes.map(() => this._nextId());
         this.textIds = this.data.texts.map(() => this._nextId());
+        this.connectorIds = this.data.connectors.map(() => this._nextId());
 
         this.childShapes = new Map();
         this.childTexts = new Map();
+        this.childConnectors = new Map();
         this.data.shapes.forEach((shape, i) => this._addChild(this.childShapes, shape.parentShape, i));
         this.data.texts.forEach((text, i) => this._addChild(this.childTexts, text.parentShape, i));
+        this.data.connectors.forEach((conn, i) => this._addChild(this.childConnectors, conn.parentShape, i));
 
         // The page itself is the outermost coordinate system
         const pageOrigin = { x: 0, y: 0 };
@@ -467,33 +470,11 @@ class VsdxBuilder {
         for (const i of (this.childTexts.get(null) || [])) {
             shapesXml += this._buildTextShape(this.data.texts[i], this.textIds[i], pageOrigin);
         }
-
-        // Connectors stay on the page even when both ends sit inside frames:
-        // page-level glue reaches a shape at any depth, and a connector that
-        // crosses a frame boundary belongs to neither frame.
-        for (const conn of this.data.connectors) {
-            const id = this._nextId();
-            shapesXml += this._buildConnector(conn, id);
-
-            // Track connections for <Connects> section
-            if (conn.fromShape !== null) {
-                this.connectorLinks.push({
-                    connectorId: id,
-                    cell: 'BeginX',
-                    fromPart: 9,
-                    targetId: this.shapeIds[conn.fromShape],
-                    toPart: 3
-                });
-            }
-            if (conn.toShape !== null) {
-                this.connectorLinks.push({
-                    connectorId: id,
-                    cell: 'EndX',
-                    fromPart: 12,
-                    targetId: this.shapeIds[conn.toShape],
-                    toPart: 3
-                });
-            }
+        for (const i of (this.childConnectors.get(null) || [])) {
+            shapesXml += this._buildConnector(this.data.connectors[i], this.connectorIds[i], pageOrigin);
+        }
+        for (let i = 0; i < this.data.connectors.length; i++) {
+            this._trackGlue(this.data.connectors[i], this.connectorIds[i]);
         }
 
         // Build <Connects> section
@@ -514,6 +495,33 @@ class VsdxBuilder {
 ${shapesXml}
   </Shapes>${connectsXml}
 </PageContents>`;
+    }
+
+    /**
+     * Record a connector's glue for the page's <Connects> section.
+     *
+     * <Connects> lives on the page whatever depth the shapes sit at, so this
+     * runs for every connector, nested or not.
+     */
+    _trackGlue(conn, id) {
+        if (conn.fromShape !== null) {
+            this.connectorLinks.push({
+                connectorId: id,
+                cell: 'BeginX',
+                fromPart: 9,
+                targetId: this.shapeIds[conn.fromShape],
+                toPart: 3
+            });
+        }
+        if (conn.toShape !== null) {
+            this.connectorLinks.push({
+                connectorId: id,
+                cell: 'EndX',
+                fromPart: 12,
+                targetId: this.shapeIds[conn.toShape],
+                toPart: 3
+            });
+        }
     }
 
     /** Group children by their parent index, with null for the page itself. */
@@ -545,8 +553,9 @@ ${shapesXml}
         const shape = this.data.shapes[index];
         const kidShapes = this.childShapes.get(index) || [];
         const kidTexts = this.childTexts.get(index) || [];
+        const kidConns = this.childConnectors.get(index) || [];
 
-        if (!kidShapes.length && !kidTexts.length) {
+        if (!kidShapes.length && !kidTexts.length && !kidConns.length) {
             return this._buildShape(shape, this.shapeIds[index], origin, '');
         }
 
@@ -558,6 +567,10 @@ ${shapesXml}
         for (const i of kidShapes) childrenXml += this._buildShapeTree(i, inner);
         for (const i of kidTexts) {
             childrenXml += this._buildTextShape(this.data.texts[i], this.textIds[i], inner);
+        }
+        // Last, so a route draws over the boxes it runs between
+        for (const i of kidConns) {
+            childrenXml += this._buildConnector(this.data.connectors[i], this.connectorIds[i], inner);
         }
 
         return this._buildShape(shape, this.shapeIds[index], origin, childrenXml);
@@ -892,13 +905,25 @@ ${this._textBlockCells(runs, estWidth, estHeight)}      <Section N="Character">
      * offset. Elbows therefore survive as drawn, and because the XForm cells
      * are formulas over Begin/End, moving a glued box re-places the endpoint
      * and the whole route follows.
+     *
+     * A connector usually stays on the page: page-level glue reaches a shape
+     * at any depth, and a route crossing a frame boundary belongs to neither
+     * frame. One whose whole route and both ends are inside a single frame is
+     * nested into it, so it travels with the frame instead of stretching.
+     *
+     * @param {any} conn
+     * @param {number} id
+     * @param {{x: number, y: number}} origin the coordinate system to place it in
      */
-    _buildConnector(conn, id) {
+    _buildConnector(conn, id, origin) {
         const pts = conn.points;
         if (pts.length < 2) return '';
 
         // Visio coordinates, y growing upwards, before any local frame
-        const vpts = pts.map(p => ({ x: this._svgToVisioX(p.x), y: this._svgToVisioY(p.y) }));
+        const vpts = pts.map(p => ({
+            x: this._svgToVisioX(p.x) - origin.x,
+            y: this._svgToVisioY(p.y) - origin.y
+        }));
         const begin = vpts[0];
         const end = vpts[vpts.length - 1];
 

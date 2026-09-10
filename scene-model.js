@@ -71,6 +71,7 @@
  * @property {string|null} text
  * @property {number|null} fromShape    index into Scene.shapes
  * @property {number|null} toShape
+ * @property {number|null} parentShape  index of the frame this sits inside
  * @property {string} [d]
  */
 
@@ -172,6 +173,7 @@ const SceneModel = {
             if (conn.text === undefined) conn.text = null;
             if (conn.fromShape === undefined) conn.fromShape = null;
             if (conn.toShape === undefined) conn.toShape = null;
+            if (conn.parentShape === undefined) conn.parentShape = null;
             // Legacy scenes that only say "there is an arrow" mean the end
             if (conn.arrowEnd === undefined) conn.arrowEnd = !!conn.hasArrow;
             if (conn.arrowStart === undefined) conn.arrowStart = false;
@@ -254,7 +256,7 @@ const SceneModel = {
             for (const key of ['arrowStart', 'arrowEnd']) {
                 if (typeof conn[key] !== 'boolean') problems.push(`${where}.${key} is not a boolean`);
             }
-            for (const key of ['fromShape', 'toShape']) {
+            for (const key of ['fromShape', 'toShape', 'parentShape']) {
                 if (!shapeIndex(conn[key])) {
                     problems.push(`${where}.${key} is not null or a valid shape index`);
                 }

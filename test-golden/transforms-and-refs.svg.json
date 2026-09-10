@@ -5,6 +5,7 @@
       "arrowStart": true,
       "fromShape": null,
       "id": null,
+      "parentShape": null,
       "points": [
         {
           "x": 20,
@@ -39,6 +40,7 @@
       "arrowStart": false,
       "fromShape": null,
       "id": null,
+      "parentShape": null,
       "points": [
         {
           "x": 150,
@@ -73,6 +75,7 @@
       "arrowStart": false,
       "fromShape": null,
       "id": null,
+      "parentShape": null,
       "points": [
         {
           "x": 150,

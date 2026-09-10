@@ -48,8 +48,9 @@ const SceneLayout = {
     /**
      * Run every heuristic over a scene, in order.      * Containers must be known
      * before labels are assigned, labels before nesting (so a label folded
-     * into a box is not also nested as a loose text), and all of it before
-     * connectors are glued.
+     * into a box is not also nested as a loose text), and gluing before a
+     * connector is nested, because which frame can hold a connector depends
+     * on where its ends are glued.
      * @param {any} scene
      * @param {any} [tuning]
      */
@@ -59,6 +60,7 @@ const SceneLayout = {
         this.associateTexts(scene, t);
         this.nest(scene, t);
         this.glueConnectors(scene, t);
+        this.nestConnectors(scene, t);
         return scene;
     },
 
@@ -93,21 +95,8 @@ const SceneLayout = {
         }
     },
 
-    /**
-     * Give every shape and loose text the frame it sits in.
-     *
-     * A drawing's frames are the whole structure a reader sees - a subnet
-     * inside a VNet inside a subscription - but on the page they are just
-     * rectangles that happen to be drawn around other rectangles. Recording
-     * the containment lets the builder emit real groups, so dragging a frame
-     * takes its contents along instead of sliding out from under them.
-     *
-     * Only frames adopt, and only frames strictly larger than the child: that
-     * ordering by area is what makes a parent chain impossible to loop.
-     */
-    nest(scene, tuning) {
-        const PAD = tuning.nestPadding;
-
+    /** The frames something can nest into: unrotated containers. */
+    nestingFrames(scene) {
         const frames = [];
         scene.shapes.forEach((shape, i) => {
             // A rotated frame would turn its children with it, and the child
@@ -116,35 +105,100 @@ const SceneLayout = {
                 frames.push({ index: i, shape, area: shape.width * shape.height });
             }
         });
+        return frames;
+    },
 
-        /** The innermost frame enclosing this box, or null. */
-        const hostOf = (x, y, width, height, ownIndex, ownArea) => {
-            let best = null;
-            let bestArea = Infinity;
-            for (const frame of frames) {
-                if (frame.index === ownIndex) continue;
-                if (frame.area <= ownArea) continue;
-                const f = frame.shape;
-                if (x < f.x - PAD || y < f.y - PAD ||
-                    x + width > f.x + f.width + PAD ||
-                    y + height > f.y + f.height + PAD) continue;
-                if (frame.area < bestArea) {
-                    bestArea = frame.area;
-                    best = frame.index;
-                }
+    /**
+     * The innermost frame enclosing this box, or null.
+     *
+     * Only frames strictly larger than the box adopt it: that ordering by
+     * area is what makes a parent chain impossible to loop.
+     */
+    innermostFrame(frames, tuning, x, y, width, height, ownIndex, ownArea) {
+        const PAD = tuning.nestPadding;
+        let best = null;
+        let bestArea = Infinity;
+
+        for (const frame of frames) {
+            if (frame.index === ownIndex) continue;
+            if (frame.area <= ownArea) continue;
+            const f = frame.shape;
+            if (x < f.x - PAD || y < f.y - PAD ||
+                x + width > f.x + f.width + PAD ||
+                y + height > f.y + f.height + PAD) continue;
+            if (frame.area < bestArea) {
+                bestArea = frame.area;
+                best = frame.index;
             }
-            return best;
-        };
+        }
+
+        return best;
+    },
+
+    /**
+     * Give every shape and loose text the frame it sits in.
+     *
+     * A drawing's frames are the whole structure a reader sees - a subnet
+     * inside a VNet inside a subscription - but on the page they are just
+     * rectangles that happen to be drawn around other rectangles. Recording
+     * the containment lets the builder emit real groups, so dragging a frame
+     * takes its contents along instead of sliding out from under them.
+     */
+    nest(scene, tuning) {
+        const frames = this.nestingFrames(scene);
 
         scene.shapes.forEach((shape, i) => {
-            shape.parentShape = hostOf(shape.x, shape.y, shape.width, shape.height,
-                                       i, shape.width * shape.height);
+            shape.parentShape = this.innermostFrame(frames, tuning, shape.x, shape.y,
+                shape.width, shape.height, i, shape.width * shape.height);
         });
 
         // A text has no extent of its own worth testing - its anchor decides,
         // the same way associateTexts decides which box owns a label.
         for (const text of scene.texts) {
-            text.parentShape = hostOf(text.x, text.y, 0, 0, -1, 0);
+            text.parentShape = this.innermostFrame(frames, tuning, text.x, text.y, 0, 0, -1, 0);
+        }
+    },
+
+    /**
+     * Give a connector the frame it sits in, if one holds all of it.
+     *
+     * A connector joins two things and cannot belong to a frame that holds
+     * only one of them, so it stays on the page unless its whole route and
+     * both its ends are inside the same frame. Glue already carries a
+     * connector along when both ends are glued to shapes that move; this is
+     * for the rest - a legend's key lines, glued at one end or neither, which
+     * would otherwise stretch out of shape when their frame moves.
+     *
+     * This has to run after gluing: which frame can hold a connector depends
+     * on where its ends are glued.
+     */
+    nestConnectors(scene, tuning) {
+        const frames = this.nestingFrames(scene);
+
+        // Is b the frame a, or nested inside it?
+        const within = (b, a) => {
+            let p = b;
+            while (Number.isInteger(p)) {
+                if (p === a) return true;
+                p = scene.shapes[p].parentShape;
+            }
+            return false;
+        };
+
+        for (const conn of scene.connectors) {
+            const xs = conn.points.map(p => p.x);
+            const ys = conn.points.map(p => p.y);
+            const minX = Math.min.apply(null, xs);
+            const minY = Math.min.apply(null, ys);
+            const ends = [conn.fromShape, conn.toShape];
+
+            let host = this.innermostFrame(frames, tuning, minX, minY,
+                Math.max.apply(null, xs) - minX,
+                Math.max.apply(null, ys) - minY, -1, 0);
+            while (host !== null && !ends.every(t => t === null || within(t, host))) {
+                host = scene.shapes[host].parentShape;
+            }
+            conn.parentShape = host;
         }
     },
 
@@ -215,29 +269,53 @@ const SceneLayout = {
         }
     },
 
+    /**
+     * How far a connector endpoint is from a shape, in user units.
+     *
+     * A box counts as hit anywhere on or inside it: an arrow drawn into a box
+     * is meant for that box. A frame is measured to its border instead,
+     * because an arrow that merely crosses a subscription-sized rectangle is
+     * not attached to it - and measuring a frame to its border is what stops
+     * every endpoint on the page from gluing to the outermost one, which is
+     * why frames used to be skipped altogether. An arrow that starts on a
+     * frame's edge really does belong to that frame, and now that frames are
+     * emitted as groups, gluing to one makes the arrow follow it.
+     */
+    glueDistance(shape, point) {
+        const cx = shape.x + shape.width / 2;
+        const cy = shape.y + shape.height / 2;
+        const dx = Math.abs(point.x - cx) - shape.width / 2;
+        const dy = Math.abs(point.y - cy) - shape.height / 2;
+
+        if (dx <= 0 && dy <= 0) {
+            return shape.isContainer ? Math.min(-dx, -dy) : 0;
+        }
+        return Math.hypot(Math.max(0, dx), Math.max(0, dy));
+    },
+
     findNearestShape(scene, tuning, point) {
         const MAX_DIST = this.glueRadius(scene, tuning);
         let best = null;
+        let bestRank = Infinity;
         let bestDist = MAX_DIST;
         let bestArea = Infinity;
 
         for (let i = 0; i < scene.shapes.length; i++) {
             const shape = scene.shapes[i];
-            // Every point inside a frame has edge distance 0, so without this
-            // check all connectors would glue to the outermost frame.
-            if (shape.isContainer) continue;
-
-            const cx = shape.x + shape.width / 2;
-            const cy = shape.y + shape.height / 2;
-
-            // Distance to shape edge
-            const dx = Math.max(0, Math.abs(point.x - cx) - shape.width / 2);
-            const dy = Math.max(0, Math.abs(point.y - cy) - shape.height / 2);
-            const dist = Math.hypot(dx, dy);
+            const dist = this.glueDistance(shape, point);
             if (dist >= MAX_DIST) continue;
 
+            // A box is always the better anchor, even a little further away:
+            // an arrow leaving a band of services under one of them belongs to
+            // that service, not to the band. A frame is what is left when no
+            // box is near enough - which is the only case where gluing to it
+            // beats not gluing at all.
+            const rank = shape.isContainer ? 1 : 0;
             const area = shape.width * shape.height;
-            if (dist < bestDist - 0.5 || (Math.abs(dist - bestDist) <= 0.5 && area < bestArea)) {
+            const closer = dist < bestDist - 0.5 ||
+                (Math.abs(dist - bestDist) <= 0.5 && area < bestArea);
+            if (rank < bestRank || (rank === bestRank && closer)) {
+                bestRank = rank;
                 bestDist = dist;
                 bestArea = area;
                 best = i;

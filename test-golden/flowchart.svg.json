@@ -5,6 +5,7 @@
       "arrowStart": false,
       "fromShape": 0,
       "id": null,
+      "parentShape": null,
       "points": [
         {
           "x": 300,
@@ -39,6 +40,7 @@
       "arrowStart": false,
       "fromShape": 1,
       "id": null,
+      "parentShape": null,
       "points": [
         {
           "x": 300,
@@ -73,6 +75,7 @@
       "arrowStart": false,
       "fromShape": 2,
       "id": null,
+      "parentShape": null,
       "points": [
         {
           "x": 200,
@@ -107,6 +110,7 @@
       "arrowStart": false,
       "fromShape": 2,
       "id": null,
+      "parentShape": null,
       "points": [
         {
           "x": 400,
@@ -141,6 +145,7 @@
       "arrowStart": false,
       "fromShape": 3,
       "id": null,
+      "parentShape": null,
       "points": [
         {
           "x": 170,
@@ -175,6 +180,7 @@
       "arrowStart": false,
       "fromShape": 4,
       "id": null,
+      "parentShape": null,
       "points": [
         {
           "x": 430,

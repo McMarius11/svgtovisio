@@ -6,6 +6,7 @@
       "d": "M240 145 L340 145",
       "fromShape": 1,
       "id": null,
+      "parentShape": 0,
       "points": [
         {
           "x": 240,

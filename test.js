@@ -446,9 +446,13 @@ const nestScene = new SvgParser(nestSvg).parse();
 const nestXml = new VsdxBuilder(nestScene)._page1();
 const nestDoc = domParser.parseFromString(nestXml, 'application/xml');
 
-const own = (el, tag, name) => Array.from(el.children).find(
-    c => c.nodeName === tag && c.getAttribute('N') === name) || null;
-const kidsOf = (el, tag) => (el ? Array.from(el.children).filter(c => c.nodeName === tag) : []);
+// Null-tolerant on purpose: when a regression means a group is not there at
+// all, every assertion below has to report FAIL rather than abort the suite.
+const own = (el, tag, name) => (el && el.children
+    ? Array.from(el.children).find(c => c.nodeName === tag && c.getAttribute('N') === name) || null
+    : null);
+const kidsOf = (el, tag) => (el && el.children
+    ? Array.from(el.children).filter(c => c.nodeName === tag) : []);
 const cellNum = (el, name) => {
     const c = own(el, 'Cell', name);
     return c ? parseFloat(c.getAttribute('V')) : null;
@@ -492,6 +496,7 @@ assert(lone !== undefined && kidsOf(lone, 'Shapes').length === 0,
 // Visio only honours the glue in <Connects> for a 1-D shape. Without OneD the
 // arrows sat unattached and stayed behind when a box moved.
 const connector = roots.find(s => own(s, 'Cell', 'OneD') !== null);
+const nestRootsHasConnector = connector !== undefined;
 assert(connector !== undefined && cellNum(connector, 'OneD') === 1,
     'a connector is a 1-D shape, which is what makes its glue real');
 assert(/BeginX/.test(formulaOf(connector, 'PinX')) &&
@@ -505,9 +510,8 @@ assert(kidsOf(own(connector, 'Section', 'Geometry'), 'Row').length === 3,
     'the elbow survives the move into the 1-D frame instead of collapsing');
 
 const nestConnects = Array.from(nestDoc.querySelectorAll('Connect'));
-assert(nestConnects.some(c => c.getAttribute('ToSheet') === tile.getAttribute('ID')) ||
-       nestConnects.some(c => c.getAttribute('FromSheet') === connector.getAttribute('ID') &&
-                              c.getAttribute('ToSheet') === tile.getAttribute('ID')),
+const tileId = tile ? tile.getAttribute('ID') : null;
+assert(tileId !== null && nestConnects.some(c => c.getAttribute('ToSheet') === tileId),
     'glue reaches a shape nested inside a group');
 
 // A rotated frame would turn its contents with it, and their coordinates are
@@ -518,6 +522,33 @@ const rotScene = new SvgParser('<svg viewBox="0 0 200 200">' +
 assert(rotScene.shapes.some(s => s.isContainer) &&
        rotScene.shapes.every(s => s.parentShape === null),
     'a rotated frame is still a frame but adopts nothing');
+
+// A connector joins two things, so it can only belong to a frame that holds
+// both. This one crosses the frame's edge and has to stay on the page.
+assert(nestRootsHasConnector, 'a connector crossing a frame boundary stays on the page');
+
+// One that runs between two boxes inside the same frame travels with it -
+// glue alone would drag one end and stretch the route.
+const insideSvg = '<svg viewBox="0 0 200 200">' +
+    '<rect x="10" y="10" width="180" height="120" fill="none" stroke="#000"/>' +
+    '<rect x="30" y="40" width="40" height="30" fill="#fff" stroke="#000"/>' +
+    '<rect x="120" y="40" width="40" height="30" fill="#fff" stroke="#000"/>' +
+    '<line x1="70" y1="55" x2="120" y2="55" stroke="#000"/></svg>';
+const insideScene = new SvgParser(insideSvg).parse();
+assert(insideScene.connectors[0].parentShape !== null,
+    'a connector wholly inside a frame is nested into it');
+const insideDoc = domParser.parseFromString(
+    new VsdxBuilder(insideScene)._page1(), 'application/xml');
+const insideRoots = kidsOf(kidsOf(insideDoc.documentElement, 'Shapes')[0], 'Shape');
+const insideFrame = insideRoots.find(s => s.getAttribute('Type') === 'Group');
+const insideConn = kidsOf(kidsOf(insideFrame, 'Shapes')[0], 'Shape')
+    .find(s => own(s, 'Cell', 'OneD') !== null);
+assert(insideConn !== undefined, 'the nested connector is emitted inside the group');
+// Nesting must not move it: its endpoint is relative to the group now.
+const insideFrameBox = boxOf(insideFrame, 0, 0);
+assert(insideConn !== undefined &&
+       Math.abs(insideFrameBox.left + cellNum(insideConn, 'BeginX') - 70 * IN) < 1e-9,
+    'a nested connector still starts where the SVG put it');
 
 // Building twice must not renumber anything, or <Connects> would drift
 const twice = new VsdxBuilder(nestScene);
