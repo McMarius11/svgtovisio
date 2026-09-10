@@ -211,20 +211,11 @@ const pageXml = new VsdxBuilder(result7)._page1();
 assert(pageXml.indexOf('N="FillForegnd" V="#FFFFFF"') !== -1, 'fill colour reaches the VSDX');
 assert(pageXml.indexOf('N="LineColor" V="#333333"') !== -1, 'stroke colour reaches the VSDX');
 assert(pageXml.indexOf('N="LineColor" V="#009640"') !== -1, 'connector colour reaches the VSDX');
-assert((pageXml.match(/<pp IX="1"/g) || []).length >= 1, 'per-line paragraph runs are emitted');
+assert(/<Text>Node A<\/Text>/.test(pageXml) && /<Text>detail line<\/Text>/.test(pageXml),
+    'each source line is its own Visio text shape');
+assert((pageXml.match(/<pp IX=/g) || []).length === 0,
+    'no <pp> marker, which Visio draws as a box and then drops the rest');
 assert(pageXml.indexOf('N="HorzAlign" V="0"') !== -1, 'left-aligned text is not force-centred');
-
-// Visio shows a missing-glyph box for any line-feed that is not the paragraph
-// separator sitting immediately before <pp>, and it rewrites <cp>/<pp> IXs
-// that are reused. Each source line is therefore its own sequential run,
-// cp before pp, with &#10; before every paragraph after the first.
-const nodeAText = (pageXml.match(/<Text>[^]*?Node A[^]*?<\/Text>/) || [])[0] || '';
-assert(/^<Text>Node A/.test(nodeAText),
-    'the first line is plain text; a leading cp/pp is drawn as a missing glyph');
-assert(/Node A<pp IX="1"\/><cp IX="1"\/>detail line/.test(nodeAText),
-    'the next line is a paragraph mark, not a line feed Visio draws as a box');
-assert(nodeAText.indexOf('&#10;') === -1 && !/\n/.test(nodeAText),
-    'the Text element holds no line feeds for Visio to draw as boxes');
 
 const twoLineDrawio = `<mxGraphModel>
   <root>
@@ -236,9 +227,8 @@ const twoLineDrawio = `<mxGraphModel>
   </root>
 </mxGraphModel>`;
 const floatingXml = new VsdxBuilder(new DrawioParser(twoLineDrawio).parse())._page1();
-const floatingText = (floatingXml.match(/<Text>[^]*?First[^]*?<\/Text>/) || [])[0] || '';
-assert(/^<Text>First<pp IX="1"\/><cp IX="1"\/>Second/.test(floatingText),
-    'a draw.io label with &#xa; becomes two Visio paragraphs, not a newline glyph');
+assert(/<Text>First<\/Text>/.test(floatingXml) && /<Text>Second<\/Text>/.test(floatingXml),
+    'a draw.io label with &#xa; becomes two Visio text shapes, not a newline glyph');
 
 // Test 9: transforms, references, paint servers, markers
 console.log('\n--- Test 9: Transforms and references ---');

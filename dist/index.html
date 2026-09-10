@@ -2876,10 +2876,58 @@ class VsdxBuilder {
             // frame that box is inches tall. A <pp> starts the next
             // paragraph. The first run has no marker - a leading cp/pp
             // ate the first letter of every label.
-            if (i === 0) body += this._xmlEscape(lines[i].text);
-            else body += `<pp IX="${i}"/><cp IX="${i}"/>${this._xmlEscape(lines[i].text)}`;
+            body += this._xmlEscape(lines[i].text);
         }
         return { charRows, paraRows, body };
+    }
+
+    /**
+     * One child shape per source line, local to the parent box. Visio will
+     * not render a second paragraph in <Text> without a glyph box.
+     *
+     * @param {{text: string, style: any}[]} runs
+     * @param {number} w parent width in inches
+     * @param {number} h parent height in inches
+     */
+    _lineTextShapes(runs, w, h) {
+        const margin = this.textMargin;
+        let yFromTop = margin;
+        let xml = '';
+        for (const run of runs) {
+            const st = run.style || {};
+            const size = this._fontSizeInches(st);
+            const bold = st.fontWeight === 'bold';
+            const align = this._horzAlign(st);
+            const lineW = Math.min(
+                w,
+                Math.max(this._lineWidthInches(run.text, size, bold) + 2 * margin, 0.2)
+            );
+            const lineH = 2 * margin + size * 1.2;
+            const pinX = align === 1 ? w / 2 : (align === 2 ? w - margin : margin);
+            const locPinX = align === 1 ? lineW / 2 : (align === 2 ? lineW : 0);
+            const pinY = h - yFromTop - 0.8 * size;
+            const locPinY = lineH / 2 - 0.35 * size;
+            yFromTop += size * 1.5;
+            const one = this._textRunsXml([run]);
+            xml += `    <Shape ID="${this._nextId()}" Type="Shape" LineStyle="0" FillStyle="0" TextStyle="0">
+      <Cell N="PinX" V="${pinX}"/>
+      <Cell N="PinY" V="${pinY}"/>
+      <Cell N="Width" V="${lineW}"/>
+      <Cell N="Height" V="${lineH}"/>
+      <Cell N="LocPinX" V="${locPinX}"/>
+      <Cell N="LocPinY" V="${locPinY}"/>
+      <Cell N="Angle" V="0"/>
+      <Cell N="FillPattern" V="0"/>
+      <Cell N="LinePattern" V="0"/>
+${this._textBlockCells([run], lineW, lineH)}      <Section N="Character">${one.charRows}
+      </Section>
+      <Section N="Paragraph">${one.paraRows}
+      </Section>
+      <Text>${one.body}</Text>
+    </Shape>
+`;
+        }
+        return xml;
     }
 
     _colorToRGB(color) {
@@ -3420,28 +3468,33 @@ ${shapesXml}
         // route the connector through the tile instead of to its edge.
         sectionsXml += this._connectionSection(w, h);
 
-        // Text: one character/paragraph run per source line, referenced from
-        // <Text> via <cp>/<pp>, so a heading and its detail lines keep their
-        // own size, weight, colour and alignment inside a single shape.
+        // Visio cannot host a line feed or a <pp> in <Text> without drawing a
+        // missing-glyph box and dropping every line after the first. One
+        // source line stays on this shape; extra lines become child text
+        // shapes, so the parent is a group.
+        let childXml = childrenXml || '';
         if (shape.text) {
-            const runs = (shape.textRuns && shape.textRuns.length)
-                ? shape.textRuns
-                : [{ text: shape.text, style: shape.textStyle || {} }];
-            const text = this._textRunsXml(runs);
-
-            cellsXml += this._textBlockCells(runs, w, h, shape.isContainer ? 0 : 1);
-
-            sectionsXml += `
+            const runs = this._flattenTextRuns(
+                (shape.textRuns && shape.textRuns.length)
+                    ? shape.textRuns
+                    : [{ text: shape.text, style: shape.textStyle || {} }]
+            );
+            if (runs.length <= 1) {
+                const text = this._textRunsXml(runs);
+                cellsXml += this._textBlockCells(runs, w, h, shape.isContainer ? 0 : 1);
+                sectionsXml += `
       <Section N="Character">${text.charRows}
       </Section>
       <Section N="Paragraph">${text.paraRows}
       </Section>`;
-
-            textXml = `
+                textXml = `
       <Text>${text.body}</Text>`;
+            } else {
+                childXml += this._lineTextShapes(runs, w, h);
+            }
         }
 
-        if (childrenXml) {
+        if (childXml) {
             // DisplayMode 1 = draw the frame behind its members. Leaving the
             // cell unset makes Visio (and Aspose) show only the empty frame.
             cellsXml += `      <Cell N="DisplayMode" V="1"/>
@@ -3451,7 +3504,7 @@ ${shapesXml}
             return `    <Shape ID="${id}" Type="Group" LineStyle="0" FillStyle="0" TextStyle="0">
 ${cellsXml}${sectionsXml}${textXml}
       <Shapes>
-${childrenXml}      </Shapes>
+${childXml}      </Shapes>
     </Shape>
 `;
         }
