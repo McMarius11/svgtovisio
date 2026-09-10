@@ -316,9 +316,8 @@ class VsdxBuilder {
      * follows the paragraph alignment so the overflow grows away from the edge
      * the text is anchored to rather than back across it.
      *
-     * TxtWidth/TxtHeight follow Width/Height so stretching the box in Visio
-     * grows the block. MAX(Width, ...) was too much and Visio dropped the
-     * shape; a plain Width/Height formula is what Visio writes itself.
+     * Plain values, not Width formulas. TxtWidth=Width made the edit field
+     * the whole tile and snapped it back when the user dragged the text out.
      *
      * @param {{text: string, style: any}[]} runs
      * @param {number} w shape width in inches
@@ -359,12 +358,12 @@ class VsdxBuilder {
       <Cell N="TopMargin" V="${margin}"/>
       <Cell N="BottomMargin" V="${margin}"/>
       <Cell N="VerticalAlign" V="${va}"/>
-      <Cell N="TxtWidth" V="${txtW}" F="Width"/>
-      <Cell N="TxtHeight" V="${txtH}" F="Height"/>
-      <Cell N="TxtPinX" V="${w * pin}" F="Width*${pin}"/>
-      <Cell N="TxtPinY" V="${txtPinY}" F="${va === 0 ? 'Height-TxtHeight*0.5' : 'Height*0.5'}"/>
-      <Cell N="TxtLocPinX" V="${txtW * pin}" F="Width*${pin}"/>
-      <Cell N="TxtLocPinY" V="${txtH * 0.5}" F="Height*0.5"/>
+      <Cell N="TxtWidth" V="${txtW}"/>
+      <Cell N="TxtHeight" V="${txtH}"/>
+      <Cell N="TxtPinX" V="${w * pin}"/>
+      <Cell N="TxtPinY" V="${txtPinY}"/>
+      <Cell N="TxtLocPinX" V="${txtW * pin}"/>
+      <Cell N="TxtLocPinY" V="${txtH * 0.5}"/>
 `;
     }
 
@@ -420,9 +419,9 @@ class VsdxBuilder {
      * @param {{text: string, style: any}[]} runs
      * @param {number} w parent width in inches
      * @param {number} h parent height in inches
-     * @param {number} parentId group Shape ID, so PinX/PinY follow a resize
+     * @param {number} _parentId unused; pins are values so the user can drag a line out
      */
-    _lineTextShapes(runs, w, h, parentId) {
+    _lineTextShapes(runs, w, h, _parentId) {
         const margin = this.textMargin;
         let yFromTop = margin;
         let xml = '';
@@ -442,13 +441,10 @@ class VsdxBuilder {
             const locPinY = lineH / 2 - 0.35 * size;
             yFromTop += size * 1.5;
             const one = this._textRunsXml([run]);
-            const fx = `Sheet.${parentId}!Width*${(pinX / w).toFixed(6)}`;
-            const fy = `Sheet.${parentId}!Height*${(pinY / h).toFixed(6)}`;
-            const fw = `Sheet.${parentId}!Width*${(lineW / w).toFixed(6)}`;
             xml += `    <Shape ID="${this._nextId()}" Type="Shape" LineStyle="0" FillStyle="0" TextStyle="0">
-      <Cell N="PinX" V="${pinX}" F="${fx}"/>
-      <Cell N="PinY" V="${pinY}" F="${fy}"/>
-      <Cell N="Width" V="${lineW}" F="${fw}"/>
+      <Cell N="PinX" V="${pinX}"/>
+      <Cell N="PinY" V="${pinY}"/>
+      <Cell N="Width" V="${lineW}"/>
       <Cell N="Height" V="${lineH}"/>
       <Cell N="LocPinX" V="${locPinX}"/>
       <Cell N="LocPinY" V="${locPinY}"/>
@@ -1038,6 +1034,7 @@ ${shapesXml}
             cellsXml += `      <Cell N="DisplayMode" V="1"/>
       <Cell N="SelectMode" V="1"/>
       <Cell N="DontMoveChildren" V="1"/>
+      <Cell N="IsTextEditTarget" V="0"/>
 `;
             sectionsXml += this._containerSection();
             return `    <Shape ID="${id}" Type="Group" LineStyle="0" FillStyle="0" TextStyle="0">

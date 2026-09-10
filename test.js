@@ -229,8 +229,8 @@ const twoLineDrawio = `<mxGraphModel>
 const floatingXml = new VsdxBuilder(new DrawioParser(twoLineDrawio).parse())._page1();
 assert(/<Text>First<\/Text>/.test(floatingXml) && /<Text>Second<\/Text>/.test(floatingXml),
     'a draw.io label with &#xa; becomes two Visio text shapes, not a newline glyph');
-assert(/N="PinX"[^>]*F="Sheet\.\d+!Width/.test(floatingXml),
-    'extra label lines follow the parent Width when the tile is stretched');
+assert(!/N="PinX"[^>]*F="Sheet\./.test(floatingXml),
+    'extra label lines are not formula-glued to the tile, so they can be dragged out');
 
 // Test 9: transforms, references, paint servers, markers
 console.log('\n--- Test 9: Transforms and references ---');
@@ -460,8 +460,8 @@ const labelled = Array.from(editableDoc.querySelectorAll('Shape')).find(s => {
 });
 assert(labelled && Math.abs(cellV(labelled, 'LeftMargin') - 4 / 96) < 1e-9,
     'text margins are in drawing units, not Visio\'s unscaled 4pt default');
-assert(cellF(labelled, 'TxtWidth') === 'Width' && cellF(labelled, 'TxtHeight') === 'Height',
-    'the text block follows Width/Height, so stretching the box in Visio grows it');
+assert(cellF(labelled, 'TxtWidth') === 'null' && cellF(labelled, 'TxtHeight') === 'null',
+    'the text block is a value, so dragging it out does not snap back to the tile');
 // Rounding alone would be shorter, but only Visio acts on it: libvisio,
 // which every Linux viewer uses, draws such a shape square. So the corners
 // are real arcs - and they still have to scale, which the frozen-cell check
