@@ -40,7 +40,7 @@ export default [
     },
     {
         // These files are CommonJS modules, not page scripts
-        files: ['build.js', 'test.js', 'test-golden.js', 'tools/*.js'],
+        files: ['build.js', 'test.js', 'test-golden.js', 'test-vsdx.js', 'tools/*.js'],
         languageOptions: { sourceType: 'commonjs' }
     },
     {

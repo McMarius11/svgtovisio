@@ -205,6 +205,32 @@ assert(pageXml.indexOf('N="LineColor" V="#009640"') !== -1, 'connector colour re
 assert((pageXml.match(/<cp IX=/g) || []).length >= 2, 'per-line character runs are emitted');
 assert(pageXml.indexOf('N="HorzAlign" V="0"') !== -1, 'left-aligned text is not force-centred');
 
+// Visio shows a missing-glyph box for any line-feed that is not the paragraph
+// separator sitting immediately before <pp>, and it rewrites <cp>/<pp> IXs
+// that are reused. Each source line is therefore its own sequential run,
+// cp before pp, with &#10; before every paragraph after the first.
+const nodeAText = (pageXml.match(/<Text>[^]*?Node A[^]*?<\/Text>/) || [])[0] || '';
+assert(/<cp IX="0"\/><pp IX="0"\/>Node A/.test(nodeAText),
+    'the first line starts with cp then pp, the order Visio writes');
+assert(/Node A&#10;<cp IX="1"\/><pp IX="1"\/>detail line/.test(nodeAText),
+    'the next line is a paragraph break, not a leftover newline glyph');
+assert(!/\n/.test(nodeAText.replace(/&#10;/g, '')),
+    'the Text element holds no raw line feeds for Visio to draw as boxes');
+
+const twoLineDrawio = `<mxGraphModel>
+  <root>
+    <mxCell id="0"/>
+    <mxCell id="1" parent="0"/>
+    <mxCell id="2" value="First&#xa;Second" vertex="1" parent="1">
+      <mxGeometry x="10" y="10" width="120" height="60" as="geometry"/>
+    </mxCell>
+  </root>
+</mxGraphModel>`;
+const floatingXml = new VsdxBuilder(new DrawioParser(twoLineDrawio).parse())._page1();
+const floatingText = (floatingXml.match(/<Text>[^]*?First[^]*?<\/Text>/) || [])[0] || '';
+assert(/<cp IX="0"\/><pp IX="0"\/>First&#10;<cp IX="1"\/><pp IX="1"\/>Second/.test(floatingText),
+    'a draw.io label with &#xa; becomes two Visio paragraphs, not a newline glyph');
+
 // Test 9: transforms, references, paint servers, markers
 console.log('\n--- Test 9: Transforms and references ---');
 const trSvg = fs.readFileSync('./test-samples/transforms-and-refs.svg', 'utf8');
@@ -382,10 +408,13 @@ console.log('\n--- Test 15: Editable output ---');
 const editableSvg = '<svg viewBox="0 0 400 200"><style>.lbl{font-size:13px}</style>' +
     '<rect x="10" y="10" width="120" height="30" rx="8" fill="#fff" stroke="#000"/>' +
     '<text x="15" y="30" class="lbl">A label far wider than its own box</text>' +
+    '<rect x="10" y="80" width="180" height="30" rx="8" fill="#fff" stroke="#000"/>' +
+    '<text x="15" y="100" class="lbl">Fits here</text>' +
     '<text x="200" y="20" class="lbl">Free floating</text>' +
     '<ellipse cx="300" cy="100" rx="60" ry="30" fill="#fff" stroke="#000"/>' +
     '<polygon points="20,150 80,150 50,190" fill="#eee" stroke="#000"/></svg>';
-const editableXml = new VsdxBuilder(new SvgParser(editableSvg).parse())._page1();
+const editableScene = new SvgParser(editableSvg).parse();
+const editableXml = new VsdxBuilder(editableScene)._page1();
 const editableDoc = domParser.parseFromString(editableXml, 'application/xml');
 const cellV = (shape, name) => {
     const c = shape && shape.querySelector(`Cell[N="${name}"]`);
@@ -414,28 +443,33 @@ assert(frozenCells === 0,
 // the same scale. Treating it as points made every label 96/72 too large.
 const fontSizes = (editableXml.match(/N="Size" V="([\d.]+)"/g) || [])
     .map(m => parseFloat(/V="([\d.]+)"/.exec(m)[1]));
-assert(fontSizes.length === 2 && fontSizes.every(v => Math.abs(v - 13 / 96) < 1e-9),
+assert(fontSizes.length >= 2 && fontSizes.every(v => Math.abs(v - 13 / 96) < 1e-9),
     `13px text becomes ${13 / 96} in, not ${13 / 72} in (got ${fontSizes.join(', ')})`);
 
-// The label is wider than its box. Visio wraps shape text at the shape width,
-// so without a wider text block it breaks into two lines and spills out of a
-// tile only one line tall.
+// Visio wraps shape text at the shape width. A line that the SVG let overflow
+// the tile must stay a free-floating line, not get stuffed in and wrapped.
+assert(editableScene.texts.some(t => t.text.indexOf('far wider') !== -1),
+    'a label wider than its tile stays a free-floating line, as in the SVG');
+assert(!editableScene.shapes.some(s => s.text && s.text.indexOf('far wider') !== -1),
+    'it is not folded into the tile');
+
 const labelled = Array.from(editableDoc.querySelectorAll('Shape')).find(s => {
     const t = s.querySelector('Text');
-    return t && t.textContent.indexOf('far wider') !== -1;
+    return t && t.textContent.indexOf('Fits here') !== -1;
 });
-assert(labelled && cellV(labelled, 'TxtWidth') > cellV(labelled, 'Width'),
-    'a label wider than its box widens the text block instead of wrapping');
 assert(labelled && Math.abs(cellV(labelled, 'LeftMargin') - 4 / 96) < 1e-9,
     'text margins are in drawing units, not Visio\'s unscaled 4pt default');
-assert(/ IN\)/.test(cellF(labelled, 'TxtWidth')),
-    'the text block formula names its unit, so a metric Visio reads it too');
+// Visio will not open a drawing whose text block is sized by a formula:
+// every labelled box comes up missing. The size is a plain value, and Visio
+// maintains the block from there.
+assert(cellF(labelled, 'TxtWidth') === 'null' && cellF(labelled, 'TxtHeight') === 'null',
+    'the text block is sized by value, which is the only thing Visio accepts');
 // Rounding alone would be shorter, but only Visio acts on it: libvisio,
 // which every Linux viewer uses, draws such a shape square. So the corners
 // are real arcs - and they still have to scale, which the frozen-cell check
 // above covers for every ArcTo row emitted here.
-const arcs = Array.from(editableDoc.querySelectorAll('Row[T="ArcTo"]'));
-assert(cellV(labelled, 'Rounding') > 0 && arcs.length === 4,
+const arcs = Array.from((labelled && labelled.querySelectorAll('Row[T="ArcTo"]')) || []);
+assert(labelled && cellV(labelled, 'Rounding') > 0 && arcs.length === 4,
     `a rounded rect is drawn with four real arcs (got ${arcs.length})`);
 assert(arcs.every(r => Array.from(r.querySelectorAll('Cell')).every(c => c.getAttribute('F'))),
     'the arcs are formulas, so the corners survive a resize');
@@ -458,6 +492,33 @@ assert(metrics._lineWidthInches('HA1', 13 * inch, false) > 1.945 * 13 * inch,
 assert(metrics._lineWidthInches('Hamburg', 13 * inch, true) >
        metrics._lineWidthInches('Hamburg', 13 * inch, false),
     'bold is estimated wider than regular in the same face');
+// Aspose/Visio wrapped the last letter of this 18px bold title when the
+// estimate was 135px. The box is only as wide as the estimate, so the
+// estimate has to clear the painted width.
+assert(metrics._lineWidthInches('Hauptstandort', 18 * inch, true) > 150 * inch,
+    'a bold title is not estimated so short that Visio wraps the last letter');
+assert(metrics._lineWidthInches('vnet-hub-connectivity', 18 * inch, true) > 210 * inch,
+    'a long bold heading keeps one line');
+assert(metrics._advance('\u2192') >= metrics._advance('M'),
+    'a diagram arrow is at least an em wide, not a digit');
+
+const overflowSvg = '<svg viewBox="0 0 400 80">' +
+    '<rect x="10" y="10" width="260" height="30" fill="#fff" stroke="#000"/>' +
+    '<text x="20" y="30" font-size="13px">Telekom IntraSelect (MPLS) \u2192 ExpressRoute Circuit</text></svg>';
+const overflowScene = new SvgParser(overflowSvg).parse();
+assert(overflowScene.texts.some(t => t.text.indexOf('Telekom IntraSelect') !== -1),
+    'a label longer than its tile stays a free-floating line');
+assert(!overflowScene.shapes.some(s => s.text && s.text.indexOf('Telekom') !== -1),
+    'so Visio cannot wrap it inside the 30px-tall tile');
+
+const clipSvg = '<svg viewBox="0 0 400 200">' +
+    '<rect x="10" y="10" width="200" height="150" fill="none" stroke="#000"/>' +
+    '<rect x="20" y="40" width="120" height="30" fill="#fff" stroke="#000"/>' +
+    '<text x="25" y="60" font-size="13px">Telekom IntraSelect (MPLS) to ExpressRoute Circuit extra</text></svg>';
+const clipScene = new SvgParser(clipSvg).parse();
+const clipText = clipScene.texts.find(t => t.text.indexOf('Telekom IntraSelect') !== -1);
+assert(clipText && clipText.parentShape === null,
+    'an overflowing line is not nested into a frame narrower than the line');
 
 // Test 16: frames hold their contents, connectors hold on to their shapes
 console.log('\n--- Test 16: Groups and 1-D connectors ---');
@@ -500,6 +561,10 @@ assert(nestFrame !== undefined, 'a frame with contents becomes a group, so dragg
 const framed = kidsOf(kidsOf(nestFrame, 'Shapes')[0], 'Shape');
 assert(framed.length === 2, `the frame holds both its box and its title (got ${framed.length})`);
 assert(own(nestFrame, 'Section', 'User') !== null, 'the group declares itself a Visio container');
+// Without DisplayMode Visio (and Aspose) draw only the frame and hide every
+// member - which is the empty-box drawing we shipped. 1 = group behind members.
+assert(cellNum(nestFrame, 'DisplayMode') === 1,
+    'a group draws its members in front of the frame (DisplayMode=1)');
 
 // Nesting is only useful if it does not move anything: a child's coordinates
 // are relative to its group, so an error here shifts a whole frame's worth.
@@ -524,10 +589,24 @@ const connector = roots.find(s => own(s, 'Cell', 'OneD') !== null);
 const nestRootsHasConnector = connector !== undefined;
 assert(connector !== undefined && cellNum(connector, 'OneD') === 1,
     'a connector is a 1-D shape, which is what makes its glue real');
-assert(/BeginX/.test(formulaOf(connector, 'PinX')) &&
-       /SQRT/.test(formulaOf(connector, 'Width')) &&
-       /ATAN2/.test(formulaOf(connector, 'Angle')),
-    'the connector XForm follows its endpoints, so re-gluing re-aims the route');
+// Visio derives a 1-D shape's transform from its endpoints itself, and will
+// not open a file that tries to do the same job with formulas. So the cells
+// carry values - which means they have to be right, since nothing recomputes
+// them on load.
+assert(['PinX', 'PinY', 'Width', 'LocPinX', 'LocPinY', 'Angle']
+    .every(n => formulaOf(connector, n) === 'null'),
+    'the connector transform is written as values, not formulas');
+const beginX = cellNum(connector, 'BeginX');
+const endX = cellNum(connector, 'EndX');
+const beginY = cellNum(connector, 'BeginY');
+const endY = cellNum(connector, 'EndY');
+assert(Math.abs(cellNum(connector, 'PinX') - (beginX + endX) / 2) < 1e-9 &&
+       Math.abs(cellNum(connector, 'PinY') - (beginY + endY) / 2) < 1e-9,
+    'the connector pin sits midway between its endpoints');
+assert(Math.abs(cellNum(connector, 'Width') - Math.hypot(endX - beginX, endY - beginY)) < 1e-9,
+    'its width is the distance between its endpoints');
+assert(Math.abs(cellNum(connector, 'Angle') - Math.atan2(endY - beginY, endX - beginX)) < 1e-9,
+    'its angle points from begin to end');
 assert(Math.abs(cellNum(connector, 'BeginX') - 90 * IN) < 1e-9 &&
        Math.abs(cellNum(connector, 'BeginY') - (nestPageH - 55 * IN)) < 1e-9,
     'the begin point keeps the coordinate the SVG gave it');

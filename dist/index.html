@@ -557,7 +557,16 @@ const SceneLayout = {
          */
         glueRadiusFraction: 0.015,
         glueRadiusMin: 8,
-        glueRadiusMax: 48
+        glueRadiusMax: 48,
+
+        /**
+         * Average em width used to decide whether a label fits inside a tile.
+         * Visio wraps shape text at the tile width; SVG just overflows. A
+         * line that would wrap is left floating so it stays one line.
+         */
+        labelFitEm: 0.55,
+        labelFitEmBold: 0.59,
+        labelFitInset: 0
     }),
 
     /**
@@ -669,8 +678,15 @@ const SceneLayout = {
 
         // A text has no extent of its own worth testing - its anchor decides,
         // the same way associateTexts decides which box owns a label.
+        // Do not nest a long overflowing line into a frame narrower than the
+        // line: Visio/Aspose clip members to the group, which wraps the text.
         for (const text of scene.texts) {
-            text.parentShape = this.innermostFrame(frames, tuning, text.x, text.y, 0, 0, -1, 0);
+            let host = this.innermostFrame(frames, tuning, text.x, text.y, 0, 0, -1, 0);
+            const need = this.estimatedLineWidth(text, tuning);
+            while (host !== null && scene.shapes[host].width < need) {
+                host = scene.shapes[host].parentShape;
+            }
+            text.parentShape = host;
         }
     },
 
@@ -719,7 +735,7 @@ const SceneLayout = {
 
     associateTexts(scene, tuning) {
         const PAD = tuning.labelPadding;
-        const assigned = new Map();
+        const candidates = new Map();
 
         for (const text of scene.texts) {
             // A parser that already classified this text keeps the last word
@@ -745,13 +761,16 @@ const SceneLayout = {
             }
 
             if (best) {
-                if (!assigned.has(best)) assigned.set(best, []);
-                assigned.get(best).push(text);
-                text._associated = true;
+                if (!candidates.has(best)) candidates.set(best, []);
+                candidates.get(best).push(text);
             }
         }
 
-        for (const [shape, texts] of assigned) {
+        for (const [shape, texts] of candidates) {
+            // All-or-nothing: Visio centers shape text in the tile. Folding
+            // only the lines that fit leaves them sitting on top of the
+            // overflow lines we left floating.
+            if (!texts.every(t => this.labelFitsBox(t, shape, tuning))) continue;
             texts.sort((a, b) => (a.y - b.y) || (a.x - b.x));
             shape.text = texts.map(t => t.text).join('\n');
             // One run per source line so a heading keeps its own size/weight.
@@ -759,10 +778,40 @@ const SceneLayout = {
             // The largest line drives the shape's overall font styling.
             shape.textStyle = texts.reduce((a, b) =>
                 (b.style.fontSize || 0) > (a.style.fontSize || 0) ? b : a).style;
+            for (const t of texts) t._associated = true;
         }
 
         // Keep unassociated texts as standalone text shapes
         scene.texts = scene.texts.filter(t => !t._associated);
+    },
+
+    /**
+     * True when the line is short enough that Visio will not wrap it inside
+     * the tile. Longer lines stay free-floating, matching the SVG overflow.
+     *
+     * @param {{text: string, style: any}} text
+     * @param {{width: number}} shape
+     * @param {{labelFitEm: number, labelFitEmBold: number, labelFitInset: number}} tuning
+     */
+    labelFitsBox(text, shape, tuning) {
+        const size = (text.style && text.style.fontSize) || 14;
+        const weight = text.style && text.style.fontWeight;
+        const bold = weight === 'bold' || Number(weight) >= 700;
+        const em = bold ? tuning.labelFitEmBold : tuning.labelFitEm;
+        const width = [...String(text.text)].length * size * em;
+        return width <= shape.width - tuning.labelFitInset;
+    },
+
+    /**
+     * @param {{text: string, style: any}} text
+     * @param {{labelFitEm: number, labelFitEmBold: number}} tuning
+     */
+    estimatedLineWidth(text, tuning) {
+        const size = (text.style && text.style.fontSize) || 14;
+        const weight = text.style && text.style.fontWeight;
+        const bold = weight === 'bold' || Number(weight) >= 700;
+        const em = bold ? tuning.labelFitEmBold : tuning.labelFitEm;
+        return [...String(text.text)].length * size * em;
     },
 
     glueConnectors(scene, tuning) {
@@ -2643,9 +2692,14 @@ class VsdxBuilder {
             VsdxBuilder._advanceMap = map;
         }
         const w = map.get(ch);
-        // Anything outside the table - accented, CJK, punctuation dashes -
-        // gets the width of a digit, which is the common case among them.
-        return w === undefined ? 0.556 : w;
+        if (w !== undefined) return w;
+        const code = ch.codePointAt(0);
+        // Arrows in labels (→ ↔) are closer to an em than to a digit.
+        if (code >= 0x2190 && code <= 0x21FF) return 1.0;
+        if (code === 0x00B7 || code === 0x2022) return 0.35;
+        if (code === 0x2013 || code === 0x2014) return 0.6;
+        // Accented letters, CJK: a digit is the common case among them.
+        return 0.556;
     }
 
     /**
@@ -2663,7 +2717,27 @@ class VsdxBuilder {
     _lineWidthInches(text, fontSizeInches, bold) {
         let ems = 0;
         for (const ch of text) ems += this._advance(ch);
-        return ems * fontSizeInches * (bold ? 1.15 : 1.08);
+        // 1.08/1.15 still under-measured Arial in Visio: "Hauptstandort" at
+        // 18px bold wrapped the last letter inside a box sized to the estimate.
+        return ems * fontSizeInches * (bold ? 1.30 : 1.18);
+    }
+
+    /**
+     * Draw.io labels keep line breaks inside one run (`&#xa;`). Split them
+     * so each line is its own Visio paragraph.
+     *
+     * @param {{text: string, style: any}[]} runs
+     * @returns {{text: string, style: any}[]}
+     */
+    _flattenTextRuns(runs) {
+        const flat = [];
+        for (const run of runs) {
+            const parts = String(run.text == null ? '' : run.text).split(/\r?\n/);
+            for (const part of parts) {
+                flat.push({ text: part, style: run.style || {} });
+            }
+        }
+        return flat;
     }
 
     /**
@@ -2676,11 +2750,11 @@ class VsdxBuilder {
      * follows the paragraph alignment so the overflow grows away from the edge
      * the text is anchored to rather than back across it.
      *
-     * The formulas keep that true after an edit: the block grows with the
-     * shape and never shrinks below what the text needs to stay unwrapped.
-     * The literals carry an explicit IN unit, because Visio reads a unitless
-     * number in a formula in the drawing's own units - millimetres on a metric
-     * installation, which would silently reduce MAX() to Width.
+     * These are plain values, not formulas. Driving them from MAX(Width, ...)
+     * would let the block grow with the shape, but Visio would not open the
+     * result: a text block whose size is a formula loses the shape it belongs
+     * to. Visio maintains the block itself once the size is set, so the only
+     * thing given up is the block growing on its own when a box is stretched.
      *
      * @param {{text: string, style: any}[]} runs
      * @param {number} w shape width in inches
@@ -2692,15 +2766,18 @@ class VsdxBuilder {
         let needH = 2 * margin;
         let overflowAlign = 0;
 
-        for (const run of runs) {
+        for (const run of this._flattenTextRuns(runs)) {
             const size = this._fontSizeInches(run.style);
             const bold = (run.style || {}).fontWeight === 'bold';
-            const lineW = this._lineWidthInches(run.text, size, bold) + 2 * margin;
+            const lineW = this._lineWidthInches(run.text, size, bold) + 2 * margin + size;
             if (lineW > needW) {
                 needW = lineW;
                 overflowAlign = this._horzAlign(run.style);
             }
-            needH += size * 1.5;
+            // One source line, plus extra rows if Visio still wraps at Width
+            // even though TxtWidth is larger (some viewers do).
+            const lines = lineW > w ? Math.max(1, Math.ceil(lineW / Math.max(w, 0.01))) : 1;
+            needH += size * 1.5 * lines;
         }
 
         const txtW = Math.max(w, needW);
@@ -2712,13 +2789,54 @@ class VsdxBuilder {
       <Cell N="TopMargin" V="${margin}"/>
       <Cell N="BottomMargin" V="${margin}"/>
       <Cell N="VerticalAlign" V="1"/>
-      <Cell N="TxtWidth" V="${txtW}" F="MAX(Width,${needW} IN)"/>
-      <Cell N="TxtHeight" V="${txtH}" F="MAX(Height,${needH} IN)"/>
-      <Cell N="TxtPinX" V="${w * pin}" F="Width*${pin}"/>
-      <Cell N="TxtPinY" V="${h * 0.5}" F="Height*0.5"/>
-      <Cell N="TxtLocPinX" V="${txtW * pin}" F="TxtWidth*${pin}"/>
-      <Cell N="TxtLocPinY" V="${txtH * 0.5}" F="TxtHeight*0.5"/>
+      <Cell N="TxtWidth" V="${txtW}"/>
+      <Cell N="TxtHeight" V="${txtH}"/>
+      <Cell N="TxtPinX" V="${w * pin}"/>
+      <Cell N="TxtPinY" V="${h * 0.5}"/>
+      <Cell N="TxtLocPinX" V="${txtW * pin}"/>
+      <Cell N="TxtLocPinY" V="${txtH * 0.5}"/>
 `;
+    }
+
+    /**
+     * One character row, one paragraph row, and one marker pair per source line.
+     *
+     * A line feed in <Text> is the paragraph separator, and only immediately
+     * before <pp>. Any other newline is drawn as a missing-glyph box - which
+     * is what the second line of every tile became. Marker IXs are sequential
+     * and not reused: Visio rewrites reused IXs by inventing extra rows, and
+     * a .vsdx is less forgiving than the old VDX loader that used to do that
+     * for you. cp before pp is the order Visio itself writes.
+     *
+     * @param {{text: string, style: any}[]} runs
+     * @returns {{charRows: string, paraRows: string, body: string}}
+     */
+    _textRunsXml(runs) {
+        const lines = this._flattenTextRuns(runs);
+        let charRows = '';
+        let paraRows = '';
+        let body = '';
+        for (let i = 0; i < lines.length; i++) {
+            const st = lines[i].style || {};
+            const color = this._colorToRGB(st.textColor || st.fill) || '#000000';
+            const size = this._fontSizeInches(st);
+            const bold = st.fontWeight === 'bold' ? '1' : '0';
+            const align = this._horzAlign(st);
+            charRows += `
+        <Row IX="${i}">
+          <Cell N="Font" V="${this._fontId(st)}"/>
+          <Cell N="Color" V="${color}"/>
+          <Cell N="Size" V="${size}"/>
+          <Cell N="Style" V="${bold}"/>
+        </Row>`;
+            paraRows += `
+        <Row IX="${i}">
+          <Cell N="HorzAlign" V="${align}"/>
+        </Row>`;
+            if (i > 0) body += '&#10;';
+            body += `<cp IX="${i}"/><pp IX="${i}"/>${this._xmlEscape(lines[i].text)}`;
+        }
+        return { charRows, paraRows, body };
     }
 
     _colorToRGB(color) {
@@ -3202,65 +3320,32 @@ ${shapesXml}
         }
 
         // Text: one character/paragraph run per source line, referenced from
-        // <Text> via <pp>/<cp>, so a heading and its detail lines keep their
+        // <Text> via <cp>/<pp>, so a heading and its detail lines keep their
         // own size, weight, colour and alignment inside a single shape.
         if (shape.text) {
             const runs = (shape.textRuns && shape.textRuns.length)
                 ? shape.textRuns
                 : [{ text: shape.text, style: shape.textStyle || {} }];
-
-            const charKeys = [];
-            const paraKeys = [];
-            let charRows = '';
-            let paraRows = '';
-            const bodyLines = [];
-
-            for (const run of runs) {
-                const st = run.style || {};
-                const color = this._colorToRGB(st.textColor || st.fill) || '#000000';
-                const size = this._fontSizeInches(st);
-                const bold = st.fontWeight === 'bold' ? '1' : '0';
-                const align = this._horzAlign(st);
-
-                const cKey = color + '|' + size + '|' + bold + '|' + this._fontId(st);
-                let cIx = charKeys.indexOf(cKey);
-                if (cIx === -1) {
-                    cIx = charKeys.push(cKey) - 1;
-                    charRows += `
-        <Row IX="${cIx}">
-          <Cell N="Font" V="${this._fontId(st)}"/>
-          <Cell N="Color" V="${color}"/>
-          <Cell N="Size" V="${size}"/>
-          <Cell N="Style" V="${bold}"/>
-        </Row>`;
-                }
-
-                const pKey = String(align);
-                let pIx = paraKeys.indexOf(pKey);
-                if (pIx === -1) {
-                    pIx = paraKeys.push(pKey) - 1;
-                    paraRows += `
-        <Row IX="${pIx}">
-          <Cell N="HorzAlign" V="${align}"/>
-        </Row>`;
-                }
-
-                bodyLines.push(`<pp IX="${pIx}"/><cp IX="${cIx}"/>${this._xmlEscape(run.text)}`);
-            }
+            const text = this._textRunsXml(runs);
 
             cellsXml += this._textBlockCells(runs, w, h);
 
             sectionsXml += `
-      <Section N="Character">${charRows}
+      <Section N="Character">${text.charRows}
       </Section>
-      <Section N="Paragraph">${paraRows}
+      <Section N="Paragraph">${text.paraRows}
       </Section>`;
 
             textXml = `
-      <Text>${bodyLines.join('\n')}</Text>`;
+      <Text>${text.body}</Text>`;
         }
 
         if (childrenXml) {
+            // DisplayMode 1 = draw the frame behind its members. Leaving the
+            // cell unset makes Visio (and Aspose) show only the empty frame.
+            cellsXml += `      <Cell N="DisplayMode" V="1"/>
+      <Cell N="SelectMode" V="1"/>
+`;
             sectionsXml += this._containerSection();
             return `    <Shape ID="${id}" Type="Group" LineStyle="0" FillStyle="0" TextStyle="0">
 ${cellsXml}${sectionsXml}${textXml}
@@ -3423,8 +3508,9 @@ ${cellsXml}${sectionsXml}${textXml}
             (this._lineWidthInches(b, fontSizeInches, isBold) >
              this._lineWidthInches(a, fontSizeInches, isBold) ? b : a), '');
         const estWidth = Math.max(
-            this._lineWidthInches(widest, fontSizeInches, isBold) + 2 * margin, 1);
-        const estHeight = 2 * margin + Math.max(lines.length, 1) * fontSizeInches * 1.5;
+            this._lineWidthInches(widest, fontSizeInches, isBold) +
+            2 * margin + fontSizeInches, 1);
+        const estHeight = 2 * margin + Math.max(lines.length, 1) * fontSizeInches * 1.15;
 
         const pinX = this._svgToVisioX(text.x) - origin.x;
         const pinY = this._svgToVisioY(text.y) - origin.y;
@@ -3436,7 +3522,7 @@ ${cellsXml}${sectionsXml}${textXml}
         const locPinX = horzAlign === 1 ? estWidth / 2 : (horzAlign === 2 ? estWidth : 0);
         const locPinY = estHeight / 2 - 0.35 * fontSizeInches;
 
-        const textColor = this._colorToRGB(text.style.textColor || text.style.fill) || '#000000';
+        const textXml = this._textRunsXml(runs);
 
         return `    <Shape ID="${id}" Type="Shape" LineStyle="0" FillStyle="0" TextStyle="0">
       <Cell N="PinX" V="${pinX}"/>
@@ -3448,20 +3534,11 @@ ${cellsXml}${sectionsXml}${textXml}
       <Cell N="Angle" V="0"/>
       <Cell N="FillPattern" V="0"/>
       <Cell N="LinePattern" V="0"/>
-${this._textBlockCells(runs, estWidth, estHeight)}      <Section N="Character">
-        <Row IX="0">
-          <Cell N="Font" V="${this._fontId(text.style)}"/>
-          <Cell N="Color" V="${textColor}"/>
-          <Cell N="Size" V="${fontSizeInches}"/>
-          <Cell N="Style" V="${isBold ? '1' : '0'}"/>
-        </Row>
+${this._textBlockCells(runs, estWidth, estHeight)}      <Section N="Character">${textXml.charRows}
       </Section>
-      <Section N="Paragraph">
-        <Row IX="0">
-          <Cell N="HorzAlign" V="${horzAlign}"/>
-        </Row>
+      <Section N="Paragraph">${textXml.paraRows}
       </Section>
-      <Text>${this._xmlEscape(text.text)}</Text>
+      <Text>${textXml.body}</Text>
     </Shape>
 `;
     }
@@ -3476,9 +3553,13 @@ ${this._textBlockCells(runs, estWidth, estHeight)}      <Section N="Character">
      *
      * A 1-D shape lives in the frame its own endpoints define: local X runs
      * from the begin point to the end point, local Y is the perpendicular
-     * offset. Elbows therefore survive as drawn, and because the XForm cells
-     * are formulas over Begin/End, moving a glued box re-places the endpoint
-     * and the whole route follows.
+     * offset. Elbows therefore survive as drawn.
+     *
+     * The transform cells are plain values. Visio derives a 1-D shape's
+     * transform from its endpoints itself, so writing formulas that do the
+     * same job by hand does not help - and Visio will not open a file that
+     * has them, which is how this was found: the drawing came up with every
+     * labelled box missing.
      *
      * A connector usually stays on the page: page-level glue reaches a shape
      * at any depth, and a route crossing a frame boundary belongs to neither
@@ -3555,13 +3636,13 @@ ${this._textBlockCells(runs, estWidth, estHeight)}      <Section N="Character">
       <Cell N="BeginY" V="${begin.y}"/>
       <Cell N="EndX" V="${end.x}"/>
       <Cell N="EndY" V="${end.y}"/>
-      <Cell N="PinX" V="${(begin.x + end.x) / 2}" F="(BeginX+EndX)/2"/>
-      <Cell N="PinY" V="${(begin.y + end.y) / 2}" F="(BeginY+EndY)/2"/>
-      <Cell N="Width" V="${w}" F="SQRT((EndX-BeginX)^2+(EndY-BeginY)^2)"/>
+      <Cell N="PinX" V="${(begin.x + end.x) / 2}"/>
+      <Cell N="PinY" V="${(begin.y + end.y) / 2}"/>
+      <Cell N="Width" V="${w}"/>
       <Cell N="Height" V="${h}"/>
-      <Cell N="LocPinX" V="${w / 2}" F="Width*0.5"/>
-      <Cell N="LocPinY" V="${h / 2}" F="Height*0.5"/>
-      <Cell N="Angle" V="${angle}" F="ATAN2(EndY-BeginY,EndX-BeginX)"/>
+      <Cell N="LocPinX" V="${w / 2}"/>
+      <Cell N="LocPinY" V="${h / 2}"/>
+      <Cell N="Angle" V="${angle}"/>
       <Cell N="FillPattern" V="0"/>
       <Cell N="LineWeight" V="${lineWeight}"/>
       <Cell N="LineColor" V="${lineColor}"/>

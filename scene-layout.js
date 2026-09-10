@@ -42,7 +42,16 @@ const SceneLayout = {
          */
         glueRadiusFraction: 0.015,
         glueRadiusMin: 8,
-        glueRadiusMax: 48
+        glueRadiusMax: 48,
+
+        /**
+         * Average em width used to decide whether a label fits inside a tile.
+         * Visio wraps shape text at the tile width; SVG just overflows. A
+         * line that would wrap is left floating so it stays one line.
+         */
+        labelFitEm: 0.55,
+        labelFitEmBold: 0.59,
+        labelFitInset: 0
     }),
 
     /**
@@ -154,8 +163,15 @@ const SceneLayout = {
 
         // A text has no extent of its own worth testing - its anchor decides,
         // the same way associateTexts decides which box owns a label.
+        // Do not nest a long overflowing line into a frame narrower than the
+        // line: Visio/Aspose clip members to the group, which wraps the text.
         for (const text of scene.texts) {
-            text.parentShape = this.innermostFrame(frames, tuning, text.x, text.y, 0, 0, -1, 0);
+            let host = this.innermostFrame(frames, tuning, text.x, text.y, 0, 0, -1, 0);
+            const need = this.estimatedLineWidth(text, tuning);
+            while (host !== null && scene.shapes[host].width < need) {
+                host = scene.shapes[host].parentShape;
+            }
+            text.parentShape = host;
         }
     },
 
@@ -204,7 +220,7 @@ const SceneLayout = {
 
     associateTexts(scene, tuning) {
         const PAD = tuning.labelPadding;
-        const assigned = new Map();
+        const candidates = new Map();
 
         for (const text of scene.texts) {
             // A parser that already classified this text keeps the last word
@@ -230,13 +246,16 @@ const SceneLayout = {
             }
 
             if (best) {
-                if (!assigned.has(best)) assigned.set(best, []);
-                assigned.get(best).push(text);
-                text._associated = true;
+                if (!candidates.has(best)) candidates.set(best, []);
+                candidates.get(best).push(text);
             }
         }
 
-        for (const [shape, texts] of assigned) {
+        for (const [shape, texts] of candidates) {
+            // All-or-nothing: Visio centers shape text in the tile. Folding
+            // only the lines that fit leaves them sitting on top of the
+            // overflow lines we left floating.
+            if (!texts.every(t => this.labelFitsBox(t, shape, tuning))) continue;
             texts.sort((a, b) => (a.y - b.y) || (a.x - b.x));
             shape.text = texts.map(t => t.text).join('\n');
             // One run per source line so a heading keeps its own size/weight.
@@ -244,10 +263,40 @@ const SceneLayout = {
             // The largest line drives the shape's overall font styling.
             shape.textStyle = texts.reduce((a, b) =>
                 (b.style.fontSize || 0) > (a.style.fontSize || 0) ? b : a).style;
+            for (const t of texts) t._associated = true;
         }
 
         // Keep unassociated texts as standalone text shapes
         scene.texts = scene.texts.filter(t => !t._associated);
+    },
+
+    /**
+     * True when the line is short enough that Visio will not wrap it inside
+     * the tile. Longer lines stay free-floating, matching the SVG overflow.
+     *
+     * @param {{text: string, style: any}} text
+     * @param {{width: number}} shape
+     * @param {{labelFitEm: number, labelFitEmBold: number, labelFitInset: number}} tuning
+     */
+    labelFitsBox(text, shape, tuning) {
+        const size = (text.style && text.style.fontSize) || 14;
+        const weight = text.style && text.style.fontWeight;
+        const bold = weight === 'bold' || Number(weight) >= 700;
+        const em = bold ? tuning.labelFitEmBold : tuning.labelFitEm;
+        const width = [...String(text.text)].length * size * em;
+        return width <= shape.width - tuning.labelFitInset;
+    },
+
+    /**
+     * @param {{text: string, style: any}} text
+     * @param {{labelFitEm: number, labelFitEmBold: number}} tuning
+     */
+    estimatedLineWidth(text, tuning) {
+        const size = (text.style && text.style.fontSize) || 14;
+        const weight = text.style && text.style.fontWeight;
+        const bold = weight === 'bold' || Number(weight) >= 700;
+        const em = bold ? tuning.labelFitEmBold : tuning.labelFitEm;
+        return [...String(text.text)].length * size * em;
     },
 
     glueConnectors(scene, tuning) {
