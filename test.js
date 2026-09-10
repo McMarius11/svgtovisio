@@ -617,6 +617,12 @@ assert(Math.abs(cellNum(connector, 'PinX') - (beginX + endX) / 2) < 1e-9 &&
     'the connector pin sits midway between its endpoints');
 assert(Math.abs(cellNum(connector, 'Width') - Math.hypot(endX - beginX, endY - beginY)) < 1e-9,
     'its width is the distance between its endpoints');
+assert(cellNum(connector, 'Height') > 0.01,
+    'a straight connector still has height, so Visio can select and glue it');
+assert(cellNum(connector, 'ObjType') === 2,
+    'ObjType 2 makes the 1-D line a routable connector');
+assert(String(formulaOf(connector, 'BegTrigger') || '').indexOf('XFTRIGGER') !== -1,
+    'BegTrigger watches the glued shape, so the line moves with it');
 assert(Math.abs(cellNum(connector, 'Angle') - Math.atan2(endY - beginY, endX - beginX)) < 1e-9,
     'its angle points from begin to end');
 assert(Math.abs(cellNum(connector, 'BeginX') - 90 * IN) < 1e-9 &&

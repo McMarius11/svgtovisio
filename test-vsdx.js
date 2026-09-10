@@ -64,6 +64,12 @@ function checkPage(pageXml, file) {
         /<Cell N="PinX"[^>]*F=/.test(s) || /<Cell N="Angle"[^>]*F=/.test(s));
     assert(bad1d.length === 0,
         `${file} 1-D transforms are values, not formulas (${oneDBlocks.length} connectors)`);
+    const flat = oneDBlocks.filter(s => {
+        const m = s.match(/N="Height" V="([^"]+)"/);
+        return m && Number(m[1]) < 0.01;
+    });
+    assert(flat.length === 0,
+        `${file} no 1-D connector is flat (Height 0)`);
 
     assert(!/<Cell N="TxtWidth"[^>]*F=/.test(pageXml),
         `${file} the text block is sized by value`);

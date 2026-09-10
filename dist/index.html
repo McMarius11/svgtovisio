@@ -3242,10 +3242,10 @@ ${shapesXml}
      */
     _connectionSection(w, h) {
         const rows = [
-            { x: w / 2, y: h, xf: 'Width*0.5', yf: 'Height' },
-            { x: w, y: h / 2, xf: 'Width', yf: 'Height*0.5' },
-            { x: w / 2, y: 0, xf: 'Width*0.5', yf: '0' },
-            { x: 0, y: h / 2, xf: '0', yf: 'Height*0.5' }
+            { x: w / 2, y: h, xf: 'Width*0.5', yf: 'Height', dx: 0, dy: 1 },
+            { x: w, y: h / 2, xf: 'Width', yf: 'Height*0.5', dx: 1, dy: 0 },
+            { x: w / 2, y: 0, xf: 'Width*0.5', yf: '0', dx: 0, dy: -1 },
+            { x: 0, y: h / 2, xf: '0', yf: 'Height*0.5', dx: -1, dy: 0 }
         ];
         let xml = `
       <Section N="Connection">`;
@@ -3254,6 +3254,8 @@ ${shapesXml}
         <Row T="Connection" IX="${i}">
           <Cell N="X" V="${r.x}" F="${r.xf}"/>
           <Cell N="Y" V="${r.y}" F="${r.yf}"/>
+          <Cell N="DirX" V="${r.dx}"/>
+          <Cell N="DirY" V="${r.dy}"/>
         </Row>`;
         });
         xml += `
@@ -3754,8 +3756,9 @@ ${this._textBlockCells(runs, estWidth, estHeight)}      <Section N="Character">$
 
         // Height is the route's perpendicular extent, doubled so the line
         // itself keeps Visio's usual place at half the shape's height.
+        // A straight connector with Height 0 cannot be selected or glued.
         const perp = local.reduce((m, p) => Math.max(m, Math.abs(p.y)), 0);
-        const h = 2 * perp;
+        const h = Math.max(2 * perp, 0.0625);
 
         const lineColor = this._colorToRGB(conn.style.stroke) || '#000000';
         const lineWeight = (conn.style.strokeWidth || 1) * this.scale;
@@ -3782,6 +3785,20 @@ ${this._textBlockCells(runs, estWidth, estHeight)}      <Section N="Character">$
         geomXml += `
       </Section>`;
 
+        const fromId = conn.fromShape !== null ? this.shapeIds[conn.fromShape] : null;
+        const toId = conn.toShape !== null ? this.shapeIds[conn.toShape] : null;
+        let glueCells = `      <Cell N="ObjType" V="2"/>
+      <Cell N="GlueType" V="2"/>
+`;
+        if (fromId !== null) {
+            glueCells += `      <Cell N="BegTrigger" F="_XFTRIGGER(Sheet.${fromId}!EventXFMod)" V="${fromId}"/>
+`;
+        }
+        if (toId !== null) {
+            glueCells += `      <Cell N="EndTrigger" F="_XFTRIGGER(Sheet.${toId}!EventXFMod)" V="${toId}"/>
+`;
+        }
+
         // The XForm follows the endpoints, the way Visio's own connectors do,
         // so re-gluing an end moves and re-aims the whole shape.
         return `    <Shape ID="${id}" Type="Shape" LineStyle="0" FillStyle="0" TextStyle="0">
@@ -3805,7 +3822,8 @@ ${this._textBlockCells(runs, estWidth, estHeight)}      <Section N="Character">$
       <Cell N="EndArrow" V="${endArrow}"/>
       <Cell N="BeginArrowSize" V="2"/>
       <Cell N="EndArrowSize" V="2"/>
-      <Cell N="LineColorTrans" V="${lineTrans}"/>${geomXml}
+      <Cell N="LineColorTrans" V="${lineTrans}"/>
+${glueCells}${geomXml}
     </Shape>
 `;
     }
