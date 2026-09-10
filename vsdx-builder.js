@@ -18,6 +18,45 @@
  */
 
 class VsdxBuilder {
+    /** Face 1, named by the No Style stylesheet, and the fallback for a
+     *  drawing that names no font at all. */
+    static DEFAULT_FACE = 'Calibri';
+
+    /**
+     * Advance widths in ems, grouped by width, for the Helvetica metrics that
+     * Arial matches.
+     *
+     * A flat average per character is wrong in the direction that hurts: it
+     * under-measures short uppercase text, which is exactly what a diagram's
+     * labels are full of. Measured against real Arial, a 0.6 em average
+     * under-measured "HA1" by 8% - and an under-measured line is one Visio
+     * wraps inside a box that had room for it.
+     */
+    static ADVANCES = {
+        '0.191': "'",
+        '0.222': "ijl",
+        '0.26': "|",
+        '0.278': " !,./:;I[\\]ft",
+        '0.333': "()-`{}",
+        '0.355': "\"",
+        '0.389': "*",
+        '0.469': "^",
+        '0.5': "Jcksvxz",
+        '0.556': "#$0123456789?_abdeghnopqu",
+        '0.584': "+<=>",
+        '0.611': "FTZ",
+        '0.667': "ABEKPRSVXY&",
+        '0.722': "CDHNRUw",
+        '0.778': "GOQ",
+        '0.833': "Mm",
+        '0.889': "%",
+        '0.944': "W",
+        '1.015': "@"
+    };
+
+    /** Built once from ADVANCES on first use. @type {Map<string, number>|null} */
+    static _advanceMap = null;
+
     constructor(parsedSvg) {
         this.data = parsedSvg;
         this.shapeIdCounter = 1;
@@ -40,6 +79,11 @@ class VsdxBuilder {
         // scale; 4 user units matches the inset the source drawings use.
         this.textMargin = 4 * this.scale;
 
+        // Typefaces, in the order they are first used. Calibri stays first
+        // because the No Style stylesheet names face 1 as its default.
+        this.faceNames = [VsdxBuilder.DEFAULT_FACE];
+        this.faceIds = new Map([[VsdxBuilder.DEFAULT_FACE.toLowerCase(), 1]]);
+
         // Track shape IDs for connector gluing
         this.shapeIds = []; // index = data.shapes index, value = Visio shape ID
         this.connectorLinks = []; // { connectorId, fromShapeId, toShapeId }
@@ -48,6 +92,10 @@ class VsdxBuilder {
     async build() {
         const zip = new JSZip();
 
+        // The page first: it is what registers the typefaces that
+        // document.xml has to declare.
+        const pageXml = this._page1();
+
         // Add required VSDX structure
         zip.file('[Content_Types].xml', this._contentTypes());
         zip.file('_rels/.rels', this._rootRels());
@@ -55,7 +103,7 @@ class VsdxBuilder {
         zip.file('visio/_rels/document.xml.rels', this._documentRels());
         zip.file('visio/pages/pages.xml', this._pages());
         zip.file('visio/pages/_rels/pages.xml.rels', this._pagesRels());
-        zip.file('visio/pages/page1.xml', this._page1());
+        zip.file('visio/pages/page1.xml', pageXml);
         zip.file('docProps/app.xml', this._appProps());
         zip.file('docProps/core.xml', this._coreProps());
         zip.file('visio/windows.xml', this._windows());
@@ -140,6 +188,52 @@ class VsdxBuilder {
     }
 
     /**
+     * The typeface a style asks for, as a Visio face name.
+     *
+     * A CSS font stack names fallbacks the drawing's author was willing to
+     * accept; Visio takes one name, so the first is it. The generic families
+     * have no meaning in Visio either, so they become the face Windows would
+     * have substituted anyway - and Helvetica, which no Windows install has,
+     * becomes the Arial it is always substituted with.
+     */
+    _faceName(style) {
+        const stack = (style && style.fontFamily) || '';
+        const first = String(stack).split(',')[0].trim().replace(/^["']|["']$/g, '');
+        const generic = {
+            'sans-serif': 'Arial',
+            'serif': 'Times New Roman',
+            'monospace': 'Courier New',
+            'cursive': 'Comic Sans MS',
+            'fantasy': 'Impact',
+            'helvetica': 'Arial',
+            'system-ui': 'Segoe UI',
+            'ui-sans-serif': 'Arial',
+            'ui-serif': 'Times New Roman',
+            'ui-monospace': 'Courier New'
+        };
+        if (!first) return VsdxBuilder.DEFAULT_FACE;
+        return generic[first.toLowerCase()] || first;
+    }
+
+    /**
+     * The Font cell value for a style, registering the face if it is new.
+     *
+     * Every run used to be written as face 1, which is Calibri, whatever the
+     * drawing asked for - so an Arial diagram came out of the converter in
+     * Calibri. The faces are collected as the page is built and declared in
+     * document.xml afterwards.
+     */
+    _fontId(style) {
+        const name = this._faceName(style);
+        const key = name.toLowerCase();
+        if (!this.faceIds.has(key)) {
+            this.faceNames.push(name);
+            this.faceIds.set(key, this.faceNames.length);
+        }
+        return this.faceIds.get(key);
+    }
+
+    /**
      * Font size in inches.
      *
      * An SVG font size is in user units - the same units as every coordinate
@@ -153,13 +247,38 @@ class VsdxBuilder {
         return size * this.scale;
     }
 
+    /** Advance width of one character, in ems. */
+    _advance(ch) {
+        let map = VsdxBuilder._advanceMap;
+        if (!map) {
+            map = new Map();
+            for (const [width, chars] of Object.entries(VsdxBuilder.ADVANCES)) {
+                for (const c of chars) map.set(c, parseFloat(width));
+            }
+            VsdxBuilder._advanceMap = map;
+        }
+        const w = map.get(ch);
+        // Anything outside the table - accented, CJK, punctuation dashes -
+        // gets the width of a digit, which is the common case among them.
+        return w === undefined ? 0.556 : w;
+    }
+
     /**
-     * Rendered width of one line, in inches. Deliberately generous: too wide
-     * only costs an invisible margin inside the text block, while too narrow
-     * makes Visio wrap a line that fitted in the source drawing.
+     * Rendered width of one line, in inches.
+     *
+     * Erring wide is cheap - it only widens an invisible text block - while
+     * erring narrow makes Visio wrap a line that fitted in the source
+     * drawing, so the sum carries a few percent of slack. Bold is wider than
+     * regular in the same face by roughly that much again.
+     *
+     * @param {string} text
+     * @param {number} fontSizeInches
+     * @param {boolean} [bold]
      */
-    _lineWidthInches(text, fontSizeInches) {
-        return text.length * fontSizeInches * 0.6;
+    _lineWidthInches(text, fontSizeInches, bold) {
+        let ems = 0;
+        for (const ch of text) ems += this._advance(ch);
+        return ems * fontSizeInches * (bold ? 1.15 : 1.08);
     }
 
     /**
@@ -190,7 +309,8 @@ class VsdxBuilder {
 
         for (const run of runs) {
             const size = this._fontSizeInches(run.style);
-            const lineW = this._lineWidthInches(run.text, size) + 2 * margin;
+            const bold = (run.style || {}).fontWeight === 'bold';
+            const lineW = this._lineWidthInches(run.text, size, bold) + 2 * margin;
             if (lineW > needW) {
                 needW = lineW;
                 overflowAlign = this._horzAlign(run.style);
@@ -336,9 +456,7 @@ class VsdxBuilder {
     <SnapSettings>65847</SnapSettings>
     <SnapExtensions>34</SnapExtensions>
   </DocumentSettings>
-  <FaceNames>
-    <FaceName ID="1" Name="Calibri" UnicodeRanges="-536870145 1073786111 0 0" CharSets="536871327 0" Panos="2 15 5 2 2 2 4 3 2 4"/>
-    <FaceName ID="2" Name="Arial" UnicodeRanges="-536870145 1073786111 0 0" CharSets="536871327 0" Panos="2 11 6 4 2 2 2 2 2 4"/>
+  <FaceNames>${this._faceNamesXml()}
   </FaceNames>
   <StyleSheets>
     <StyleSheet ID="0" Name="No Style" NameU="No Style">
@@ -370,6 +488,27 @@ class VsdxBuilder {
     </StyleSheet>
   </StyleSheets>
 </VisioDocument>`;
+    }
+
+    /**
+     * The document's typeface table.
+     *
+     * Panose describes a face's shape and is what Visio falls back on when the
+     * named font is missing, so the two faces whose values are known keep
+     * them; for anything else naming the face is all this can honestly say.
+     */
+    _faceNamesXml() {
+        const known = {
+            calibri: 'Panos="2 15 5 2 2 2 4 3 2 4"',
+            arial: 'Panos="2 11 6 4 2 2 2 2 2 4"'
+        };
+        return this.faceNames.map((name, i) => {
+            const panose = known[name.toLowerCase()];
+            return `
+    <FaceName ID="${i + 1}" Name="${this._xmlEscape(name)}" ` +
+                `UnicodeRanges="-536870145 1073786111 0 0" CharSets="536871327 0"` +
+                (panose ? ' ' + panose : '') + '/>';
+        }).join('');
     }
 
     _documentRels() {
@@ -698,13 +837,13 @@ ${shapesXml}
                 const bold = st.fontWeight === 'bold' ? '1' : '0';
                 const align = this._horzAlign(st);
 
-                const cKey = color + '|' + size + '|' + bold;
+                const cKey = color + '|' + size + '|' + bold + '|' + this._fontId(st);
                 let cIx = charKeys.indexOf(cKey);
                 if (cIx === -1) {
                     cIx = charKeys.push(cKey) - 1;
                     charRows += `
         <Row IX="${cIx}">
-          <Cell N="Font" V="1"/>
+          <Cell N="Font" V="${this._fontId(st)}"/>
           <Cell N="Color" V="${color}"/>
           <Cell N="Size" V="${size}"/>
           <Cell N="Style" V="${bold}"/>
@@ -891,9 +1030,15 @@ ${cellsXml}${sectionsXml}${textXml}
         const fontSizeInches = this._fontSizeInches(text.style);
         const lines = text.text.split('\n');
         const runs = lines.map(line => ({ text: line, style: text.style }));
-        const longest = lines.reduce((a, b) => (b.length > a.length ? b : a), '');
+        const isBold = text.style.fontWeight === 'bold';
         const margin = this.textMargin;
-        const estWidth = Math.max(this._lineWidthInches(longest, fontSizeInches) + 2 * margin, 1);
+        // Widest by measurement, not by character count: a short run of
+        // capitals easily beats a longer lowercase one.
+        const widest = lines.reduce((a, b) =>
+            (this._lineWidthInches(b, fontSizeInches, isBold) >
+             this._lineWidthInches(a, fontSizeInches, isBold) ? b : a), '');
+        const estWidth = Math.max(
+            this._lineWidthInches(widest, fontSizeInches, isBold) + 2 * margin, 1);
         const estHeight = 2 * margin + Math.max(lines.length, 1) * fontSizeInches * 1.5;
 
         const pinX = this._svgToVisioX(text.x) - origin.x;
@@ -907,7 +1052,6 @@ ${cellsXml}${sectionsXml}${textXml}
         const locPinY = estHeight / 2 - 0.35 * fontSizeInches;
 
         const textColor = this._colorToRGB(text.style.textColor || text.style.fill) || '#000000';
-        const isBold = text.style.fontWeight === 'bold';
 
         return `    <Shape ID="${id}" Type="Shape" LineStyle="0" FillStyle="0" TextStyle="0">
       <Cell N="PinX" V="${pinX}"/>
@@ -921,7 +1065,7 @@ ${cellsXml}${sectionsXml}${textXml}
       <Cell N="LinePattern" V="0"/>
 ${this._textBlockCells(runs, estWidth, estHeight)}      <Section N="Character">
         <Row IX="0">
-          <Cell N="Font" V="1"/>
+          <Cell N="Font" V="${this._fontId(text.style)}"/>
           <Cell N="Color" V="${textColor}"/>
           <Cell N="Size" V="${fontSizeInches}"/>
           <Cell N="Style" V="${isBold ? '1' : '0'}"/>

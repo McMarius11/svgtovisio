@@ -443,6 +443,22 @@ assert(arcs.every(r => /MIN\(Rounding/.test(String(
     (r.querySelector('Cell[N="A"]') || { getAttribute: () => '' }).getAttribute('F')))),
     'the arc bow follows the Rounding cell, so the radius stays editable');
 
+// The width estimate decides where Visio wraps, so it has to follow the
+// characters rather than count them. A flat per-character average
+// under-measures short uppercase text - the shape a diagram's labels take -
+// and an under-measured line is one Visio wraps inside a box that had room.
+const metrics = new VsdxBuilder(new SvgParser('<svg viewBox="0 0 10 10"/>').parse());
+const inch = 1 / 96;
+assert(metrics._lineWidthInches('MMM', 13 * inch, false) >
+       metrics._lineWidthInches('iii', 13 * inch, false) * 3,
+    'the width estimate follows the characters, not just how many there are');
+// Arial draws HA1 at 0.722 + 0.667 + 0.556 = 1.945 em
+assert(metrics._lineWidthInches('HA1', 13 * inch, false) > 1.945 * 13 * inch,
+    'a run of capitals is estimated at least as wide as Arial draws it');
+assert(metrics._lineWidthInches('Hamburg', 13 * inch, true) >
+       metrics._lineWidthInches('Hamburg', 13 * inch, false),
+    'bold is estimated wider than regular in the same face');
+
 // Test 16: frames hold their contents, connectors hold on to their shapes
 console.log('\n--- Test 16: Groups and 1-D connectors ---');
 const nestSvg = '<svg viewBox="0 0 400 300">' +
@@ -562,6 +578,32 @@ assert(insideConn !== undefined &&
 // Building twice must not renumber anything, or <Connects> would drift
 const twice = new VsdxBuilder(nestScene);
 assert(twice._page1() === twice._page1(), 'building the page twice gives the same IDs');
+
+// Test 17: the typeface the drawing asked for
+console.log('\n--- Test 17: Fonts ---');
+const fontSvg = '<svg viewBox="0 0 300 100" font-family="Arial, Helvetica, sans-serif">' +
+    '<rect x="10" y="10" width="120" height="40" fill="#fff" stroke="#000"/>' +
+    '<text x="20" y="35">Arial label</text>' +
+    '<text x="160" y="35" font-family="&quot;Courier New&quot;, monospace">mono</text></svg>';
+const fontBuilder = new VsdxBuilder(new SvgParser(fontSvg).parse());
+const fontPage = fontBuilder._page1();
+const fontDoc = fontBuilder._document();
+const faces = {};
+for (const m of fontDoc.matchAll(/<FaceName ID="(\d+)" Name="([^"]+)"/g)) faces[m[1]] = m[2];
+const usedFonts = [...new Set([...fontPage.matchAll(/N="Font" V="(\d+)"/g)].map(m => m[1]))];
+
+// A page that names a face the document never declares leaves Visio guessing.
+assert(usedFonts.length > 0 && usedFonts.every(id => faces[id] !== undefined),
+    `every face the page uses is declared (uses ${usedFonts.join(',')}, declared ${Object.keys(faces).join(',')})`);
+assert(Object.values(faces).indexOf('Arial') !== -1,
+    `an Arial drawing converts to Arial, not the default (declared: ${Object.values(faces).join(', ')})`);
+assert(Object.values(faces).indexOf('Courier New') !== -1,
+    'a second typeface gets its own face entry');
+assert(faces['1'] === 'Calibri',
+    'face 1 stays Calibri, which the No Style stylesheet names as its default');
+// A CSS stack names fallbacks; Visio takes one name, and Helvetica is not it
+assert(Object.values(faces).indexOf('Helvetica') === -1,
+    'Helvetica is not offered to Visio, which has no such font');
 
 // Full package, built the same way the browser builds it
 (async () => {
