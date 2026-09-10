@@ -221,10 +221,10 @@ assert(pageXml.indexOf('N="HorzAlign" V="0"') !== -1, 'left-aligned text is not 
 const nodeAText = (pageXml.match(/<Text>[^]*?Node A[^]*?<\/Text>/) || [])[0] || '';
 assert(/^<Text>Node A/.test(nodeAText),
     'the first line is plain text; a leading cp/pp is drawn as a missing glyph');
-assert(/Node A&#10;<pp IX="1"\/><cp IX="1"\/>detail line/.test(nodeAText),
-    'the next line is a paragraph break, not a leftover newline glyph');
-assert(!/\n/.test(nodeAText.replace(/&#10;/g, '')),
-    'the Text element holds no raw line feeds for Visio to draw as boxes');
+assert(/Node A<pp IX="1"\/><cp IX="1"\/>detail line/.test(nodeAText),
+    'the next line is a paragraph mark, not a line feed Visio draws as a box');
+assert(nodeAText.indexOf('&#10;') === -1 && !/\n/.test(nodeAText),
+    'the Text element holds no line feeds for Visio to draw as boxes');
 
 const twoLineDrawio = `<mxGraphModel>
   <root>
@@ -237,7 +237,7 @@ const twoLineDrawio = `<mxGraphModel>
 </mxGraphModel>`;
 const floatingXml = new VsdxBuilder(new DrawioParser(twoLineDrawio).parse())._page1();
 const floatingText = (floatingXml.match(/<Text>[^]*?First[^]*?<\/Text>/) || [])[0] || '';
-assert(/^<Text>First&#10;<pp IX="1"\/><cp IX="1"\/>Second/.test(floatingText),
+assert(/^<Text>First<pp IX="1"\/><cp IX="1"\/>Second/.test(floatingText),
     'a draw.io label with &#xa; becomes two Visio paragraphs, not a newline glyph');
 
 // Test 9: transforms, references, paint servers, markers
@@ -570,6 +570,19 @@ assert(nestFrame !== undefined, 'a frame with contents becomes a group, so dragg
 const framed = kidsOf(kidsOf(nestFrame, 'Shapes')[0], 'Shape');
 assert(framed.length === 2, `the frame holds both its box and its title (got ${framed.length})`);
 assert(own(nestFrame, 'Section', 'User') !== null, 'the group declares itself a Visio container');
+const bannerScene = new DrawioParser('<mxGraphModel><root>' +
+    '<mxCell id="0"/><mxCell id="1" parent="0"/>' +
+    '<mxCell id="2" value="Banner" style="verticalAlign=top;" vertex="1" parent="1">' +
+    '<mxGeometry x="0" y="0" width="900" height="700" as="geometry"/></mxCell>' +
+    '<mxCell id="3" value="Child" vertex="1" parent="1">' +
+    '<mxGeometry x="20" y="80" width="80" height="30" as="geometry"/></mxCell>' +
+    '</root></mxGraphModel>').parse();
+const bannerXml = new VsdxBuilder(bannerScene)._page1();
+const bannerDoc = domParser.parseFromString(bannerXml, 'application/xml');
+const bannerGroup = Array.from(bannerDoc.querySelectorAll('Shape')).find(s =>
+    s.getAttribute('Type') === 'Group');
+assert(bannerGroup && cellV(bannerGroup, 'TxtHeight') < cellV(bannerGroup, 'Height') / 4,
+    'a frame title is not stretched to the height of the frame');
 // Without DisplayMode Visio (and Aspose) draw only the frame and hide every
 // member - which is the empty-box drawing we shipped. 1 = group behind members.
 assert(cellNum(nestFrame, 'DisplayMode') === 1,

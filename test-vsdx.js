@@ -55,9 +55,9 @@ function checkPage(pageXml, file) {
         `${file} every group has DisplayMode=1 (${display}/${groups})`);
 
     const texts = pageXml.match(/<Text>[\s\S]*?<\/Text>/g) || [];
-    const rawBreaks = texts.filter(t => t.replace(/&#10;/g, '').indexOf('\n') !== -1);
+    const rawBreaks = texts.filter(t => t.indexOf('&#10;') !== -1 || t.indexOf('\n') !== -1);
     assert(rawBreaks.length === 0,
-        `${file} <Text> has no raw line feeds (${rawBreaks.length} of ${texts.length})`);
+        `${file} <Text> has no line feeds (${rawBreaks.length} of ${texts.length})`);
 
     const oneDBlocks = pageXml.split(/<Shape /).filter(s => /N="OneD" V="1"/.test(s));
     const bad1d = oneDBlocks.filter(s =>

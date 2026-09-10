@@ -2813,19 +2813,24 @@ class VsdxBuilder {
             needH += size * 1.5 * lines;
         }
 
-        const txtW = Math.max(w, needW);
-        const txtH = Math.max(h, needH);
+        const va = vertAlign == null ? 1 : vertAlign;
+        // A frame is huge; filling it with the text block makes a stray
+        // glyph as tall as the frame. Size the block to the text, then pin
+        // it to the top of a container or the centre of a tile.
+        const txtW = va === 0 ? Math.max(needW, 2 * margin + 0.1) : Math.max(w, needW);
+        const txtH = Math.max(needH, 2 * margin + 0.1);
         const pin = overflowAlign === 1 ? 0.5 : (overflowAlign === 2 ? 1 : 0);
+        const txtPinY = va === 0 ? h - txtH / 2 : h / 2;
 
         return `      <Cell N="LeftMargin" V="${margin}"/>
       <Cell N="RightMargin" V="${margin}"/>
       <Cell N="TopMargin" V="${margin}"/>
       <Cell N="BottomMargin" V="${margin}"/>
-      <Cell N="VerticalAlign" V="${vertAlign == null ? 1 : vertAlign}"/>
+      <Cell N="VerticalAlign" V="${va}"/>
       <Cell N="TxtWidth" V="${txtW}"/>
       <Cell N="TxtHeight" V="${txtH}"/>
       <Cell N="TxtPinX" V="${w * pin}"/>
-      <Cell N="TxtPinY" V="${h * 0.5}"/>
+      <Cell N="TxtPinY" V="${txtPinY}"/>
       <Cell N="TxtLocPinX" V="${txtW * pin}"/>
       <Cell N="TxtLocPinY" V="${txtH * 0.5}"/>
 `;
@@ -2866,11 +2871,13 @@ class VsdxBuilder {
         <Row IX="${i}">
           <Cell N="HorzAlign" V="${align}"/>
         </Row>`;
-            // A leading <cp>/<pp> is drawn as a missing-glyph box that eats
-            // the first letter. Later paragraphs start with a line feed then
-            // pp (required) then cp, the order Visio writes.
+            // Never put a line feed in <Text>: Visio draws U+000A as a
+            // missing-glyph box, and if the text block is the size of a
+            // frame that box is inches tall. A <pp> starts the next
+            // paragraph. The first run has no marker - a leading cp/pp
+            // ate the first letter of every label.
             if (i === 0) body += this._xmlEscape(lines[i].text);
-            else body += `&#10;<pp IX="${i}"/><cp IX="${i}"/>${this._xmlEscape(lines[i].text)}`;
+            else body += `<pp IX="${i}"/><cp IX="${i}"/>${this._xmlEscape(lines[i].text)}`;
         }
         return { charRows, paraRows, body };
     }
