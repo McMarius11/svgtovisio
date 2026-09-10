@@ -2782,11 +2782,9 @@ class VsdxBuilder {
      * follows the paragraph alignment so the overflow grows away from the edge
      * the text is anchored to rather than back across it.
      *
-     * These are plain values, not formulas. Driving them from MAX(Width, ...)
-     * would let the block grow with the shape, but Visio would not open the
-     * result: a text block whose size is a formula loses the shape it belongs
-     * to. Visio maintains the block itself once the size is set, so the only
-     * thing given up is the block growing on its own when a box is stretched.
+     * TxtWidth/TxtHeight follow Width/Height so stretching the box in Visio
+     * grows the block. MAX(Width, ...) was too much and Visio dropped the
+     * shape; a plain Width/Height formula is what Visio writes itself.
      *
      * @param {{text: string, style: any}[]} runs
      * @param {number} w shape width in inches
@@ -2827,12 +2825,12 @@ class VsdxBuilder {
       <Cell N="TopMargin" V="${margin}"/>
       <Cell N="BottomMargin" V="${margin}"/>
       <Cell N="VerticalAlign" V="${va}"/>
-      <Cell N="TxtWidth" V="${txtW}"/>
-      <Cell N="TxtHeight" V="${txtH}"/>
-      <Cell N="TxtPinX" V="${w * pin}"/>
-      <Cell N="TxtPinY" V="${txtPinY}"/>
-      <Cell N="TxtLocPinX" V="${txtW * pin}"/>
-      <Cell N="TxtLocPinY" V="${txtH * 0.5}"/>
+      <Cell N="TxtWidth" V="${txtW}" F="Width"/>
+      <Cell N="TxtHeight" V="${txtH}" F="Height"/>
+      <Cell N="TxtPinX" V="${w * pin}" F="Width*${pin}"/>
+      <Cell N="TxtPinY" V="${txtPinY}" F="${va === 0 ? 'Height-TxtHeight*0.5' : 'Height*0.5'}"/>
+      <Cell N="TxtLocPinX" V="${txtW * pin}" F="Width*${pin}"/>
+      <Cell N="TxtLocPinY" V="${txtH * 0.5}" F="Height*0.5"/>
 `;
     }
 
@@ -2888,8 +2886,9 @@ class VsdxBuilder {
      * @param {{text: string, style: any}[]} runs
      * @param {number} w parent width in inches
      * @param {number} h parent height in inches
+     * @param {number} parentId group Shape ID, so PinX/PinY follow a resize
      */
-    _lineTextShapes(runs, w, h) {
+    _lineTextShapes(runs, w, h, parentId) {
         const margin = this.textMargin;
         let yFromTop = margin;
         let xml = '';
@@ -2909,10 +2908,13 @@ class VsdxBuilder {
             const locPinY = lineH / 2 - 0.35 * size;
             yFromTop += size * 1.5;
             const one = this._textRunsXml([run]);
+            const fx = `Sheet.${parentId}!Width*${(pinX / w).toFixed(6)}`;
+            const fy = `Sheet.${parentId}!Height*${(pinY / h).toFixed(6)}`;
+            const fw = `Sheet.${parentId}!Width*${(lineW / w).toFixed(6)}`;
             xml += `    <Shape ID="${this._nextId()}" Type="Shape" LineStyle="0" FillStyle="0" TextStyle="0">
-      <Cell N="PinX" V="${pinX}"/>
-      <Cell N="PinY" V="${pinY}"/>
-      <Cell N="Width" V="${lineW}"/>
+      <Cell N="PinX" V="${pinX}" F="${fx}"/>
+      <Cell N="PinY" V="${pinY}" F="${fy}"/>
+      <Cell N="Width" V="${lineW}" F="${fw}"/>
       <Cell N="Height" V="${lineH}"/>
       <Cell N="LocPinX" V="${locPinX}"/>
       <Cell N="LocPinY" V="${locPinY}"/>
@@ -3492,7 +3494,7 @@ ${shapesXml}
                 textXml = `
       <Text>${text.body}</Text>`;
             } else {
-                childXml += this._lineTextShapes(runs, w, h);
+                childXml += this._lineTextShapes(runs, w, h, id);
             }
         }
 
@@ -3501,6 +3503,7 @@ ${shapesXml}
             // cell unset makes Visio (and Aspose) show only the empty frame.
             cellsXml += `      <Cell N="DisplayMode" V="1"/>
       <Cell N="SelectMode" V="1"/>
+      <Cell N="DontMoveChildren" V="1"/>
 `;
             sectionsXml += this._containerSection();
             return `    <Shape ID="${id}" Type="Group" LineStyle="0" FillStyle="0" TextStyle="0">
@@ -3735,6 +3738,24 @@ ${this._textBlockCells(runs, estWidth, estHeight)}      <Section N="Character">$
             x: this._svgToVisioX(p.x) - origin.x,
             y: this._svgToVisioY(p.y) - origin.y
         }));
+        // Pull an arrowed end off the box edge so the head is a triangle
+        // on the line, not a blob sitting on the tile.
+        const arrowIn = 0.12;
+        const pull = (from, toward) => {
+            const dx = toward.x - from.x;
+            const dy = toward.y - from.y;
+            const len = Math.hypot(dx, dy);
+            if (len < arrowIn * 2) return from;
+            return {
+                x: from.x + dx / len * arrowIn,
+                y: from.y + dy / len * arrowIn
+            };
+        };
+        if (conn.arrowStart && vpts.length >= 2) vpts[0] = pull(vpts[0], vpts[1]);
+        if (conn.arrowEnd && vpts.length >= 2) {
+            vpts[vpts.length - 1] = pull(vpts[vpts.length - 1], vpts[vpts.length - 2]);
+        }
+
         const begin = vpts[0];
         const end = vpts[vpts.length - 1];
 
@@ -3820,8 +3841,8 @@ ${this._textBlockCells(runs, estWidth, estHeight)}      <Section N="Character">$
       <Cell N="LinePattern" V="${dashPattern}"/>
       <Cell N="BeginArrow" V="${beginArrow}"/>
       <Cell N="EndArrow" V="${endArrow}"/>
-      <Cell N="BeginArrowSize" V="2"/>
-      <Cell N="EndArrowSize" V="2"/>
+      <Cell N="BeginArrowSize" V="3"/>
+      <Cell N="EndArrowSize" V="3"/>
       <Cell N="LineColorTrans" V="${lineTrans}"/>
 ${glueCells}${geomXml}
     </Shape>

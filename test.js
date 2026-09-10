@@ -229,6 +229,8 @@ const twoLineDrawio = `<mxGraphModel>
 const floatingXml = new VsdxBuilder(new DrawioParser(twoLineDrawio).parse())._page1();
 assert(/<Text>First<\/Text>/.test(floatingXml) && /<Text>Second<\/Text>/.test(floatingXml),
     'a draw.io label with &#xa; becomes two Visio text shapes, not a newline glyph');
+assert(/N="PinX"[^>]*F="Sheet\.\d+!Width/.test(floatingXml),
+    'extra label lines follow the parent Width when the tile is stretched');
 
 // Test 9: transforms, references, paint servers, markers
 console.log('\n--- Test 9: Transforms and references ---');
@@ -458,11 +460,8 @@ const labelled = Array.from(editableDoc.querySelectorAll('Shape')).find(s => {
 });
 assert(labelled && Math.abs(cellV(labelled, 'LeftMargin') - 4 / 96) < 1e-9,
     'text margins are in drawing units, not Visio\'s unscaled 4pt default');
-// Visio will not open a drawing whose text block is sized by a formula:
-// every labelled box comes up missing. The size is a plain value, and Visio
-// maintains the block from there.
-assert(cellF(labelled, 'TxtWidth') === 'null' && cellF(labelled, 'TxtHeight') === 'null',
-    'the text block is sized by value, which is the only thing Visio accepts');
+assert(cellF(labelled, 'TxtWidth') === 'Width' && cellF(labelled, 'TxtHeight') === 'Height',
+    'the text block follows Width/Height, so stretching the box in Visio grows it');
 // Rounding alone would be shorter, but only Visio acts on it: libvisio,
 // which every Linux viewer uses, draws such a shape square. So the corners
 // are real arcs - and they still have to scale, which the frozen-cell check
@@ -560,6 +559,8 @@ assert(nestFrame !== undefined, 'a frame with contents becomes a group, so dragg
 const framed = kidsOf(kidsOf(nestFrame, 'Shapes')[0], 'Shape');
 assert(framed.length === 2, `the frame holds both its box and its title (got ${framed.length})`);
 assert(own(nestFrame, 'Section', 'User') !== null, 'the group declares itself a Visio container');
+assert(cellNum(nestFrame, 'DontMoveChildren') === 1,
+    'resizing a group reflows children via formulas instead of stretching them');
 const bannerScene = new DrawioParser('<mxGraphModel><root>' +
     '<mxCell id="0"/><mxCell id="1" parent="0"/>' +
     '<mxCell id="2" value="Banner" style="verticalAlign=top;" vertex="1" parent="1">' +

@@ -71,8 +71,10 @@ function checkPage(pageXml, file) {
     assert(flat.length === 0,
         `${file} no 1-D connector is flat (Height 0)`);
 
-    assert(!/<Cell N="TxtWidth"[^>]*F=/.test(pageXml),
-        `${file} the text block is sized by value`);
+    const badTxt = (pageXml.match(/<Cell N="TxtWidth"[^>]*F="([^"]*)"/g) || [])
+        .filter(c => !/F="Width"/.test(c));
+    assert(badTxt.length === 0,
+        `${file} TxtWidth is Width, not MAX(...)`);
 }
 
 (async () => {
