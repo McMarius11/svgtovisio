@@ -2249,6 +2249,11 @@ class VsdxBuilder {
 
         this.scale = 1 / 96; // px to inches
 
+        // Text sits this far off the shape's border. Visio's own default is
+        // 4pt, which is a different size on every drawing because it does not
+        // scale; 4 user units matches the inset the source drawings use.
+        this.textMargin = 4 * this.scale;
+
         // Track shape IDs for connector gluing
         this.shapeIds = []; // index = data.shapes index, value = Visio shape ID
         this.connectorLinks = []; // { connectorId, fromShapeId, toShapeId }
@@ -2321,6 +2326,108 @@ class VsdxBuilder {
         if (anchor === 'middle') return 1;
         if (anchor === 'end') return 2;
         return 0;
+    }
+
+    /**
+     * A geometry cell Visio can rescale.
+     *
+     * Visio resizes a shape by writing its Width and Height cells and then
+     * re-evaluating the geometry. A geometry cell holding a plain number has
+     * nothing to re-evaluate, so the outline stays put while the selection
+     * frame grows - the shape looks like it cannot be resized at all. Every
+     * coordinate therefore carries a formula in terms of Width/Height, with
+     * the computed value cached in V for readers that do not evaluate
+     * formulas.
+     *
+     * @param {string} name
+     * @param {number} value the cached value, in inches
+     * @param {string} formula
+     */
+    _geomCell(name, value, formula) {
+        return `<Cell N="${name}" V="${value}" F="${this._xmlEscape(formula)}"/>`;
+    }
+
+    /** A geometry coordinate as a fraction of the shape's Width or Height. */
+    _relGeomCell(name, value, extent, dimension) {
+        const fraction = extent > 0 ? value / extent : 0;
+        return this._geomCell(name, value, `${dimension}*${fraction}`);
+    }
+
+    /**
+     * Font size in inches.
+     *
+     * An SVG font size is in user units - the same units as every coordinate
+     * on the drawing - so it converts with the same scale. Treating it as
+     * points instead (a plain /72) made every label 96/72 = 33% too large for
+     * the box around it, which is why text that fitted in the SVG wrapped and
+     * spilled out in Visio.
+     */
+    _fontSizeInches(style) {
+        const size = style && style.fontSize ? style.fontSize : 14;
+        return size * this.scale;
+    }
+
+    /**
+     * Rendered width of one line, in inches. Deliberately generous: too wide
+     * only costs an invisible margin inside the text block, while too narrow
+     * makes Visio wrap a line that fitted in the source drawing.
+     */
+    _lineWidthInches(text, fontSizeInches) {
+        return text.length * fontSizeInches * 0.6;
+    }
+
+    /**
+     * The text block: margins, and a block at least as large as the text.
+     *
+     * Visio wraps shape text at the shape's width, so a label wider than its
+     * box breaks into extra lines and spills out of a short tile - where the
+     * same label in the source SVG simply overflowed on one line. TxtWidth and
+     * TxtHeight keep the block as large as the text needs, and the block's pin
+     * follows the paragraph alignment so the overflow grows away from the edge
+     * the text is anchored to rather than back across it.
+     *
+     * The formulas keep that true after an edit: the block grows with the
+     * shape and never shrinks below what the text needs to stay unwrapped.
+     * The literals carry an explicit IN unit, because Visio reads a unitless
+     * number in a formula in the drawing's own units - millimetres on a metric
+     * installation, which would silently reduce MAX() to Width.
+     *
+     * @param {{text: string, style: any}[]} runs
+     * @param {number} w shape width in inches
+     * @param {number} h shape height in inches
+     */
+    _textBlockCells(runs, w, h) {
+        const margin = this.textMargin;
+        let needW = 0;
+        let needH = 2 * margin;
+        let overflowAlign = 0;
+
+        for (const run of runs) {
+            const size = this._fontSizeInches(run.style);
+            const lineW = this._lineWidthInches(run.text, size) + 2 * margin;
+            if (lineW > needW) {
+                needW = lineW;
+                overflowAlign = this._horzAlign(run.style);
+            }
+            needH += size * 1.5;
+        }
+
+        const txtW = Math.max(w, needW);
+        const txtH = Math.max(h, needH);
+        const pin = overflowAlign === 1 ? 0.5 : (overflowAlign === 2 ? 1 : 0);
+
+        return `      <Cell N="LeftMargin" V="${margin}"/>
+      <Cell N="RightMargin" V="${margin}"/>
+      <Cell N="TopMargin" V="${margin}"/>
+      <Cell N="BottomMargin" V="${margin}"/>
+      <Cell N="VerticalAlign" V="1"/>
+      <Cell N="TxtWidth" V="${txtW}" F="MAX(Width,${needW} IN)"/>
+      <Cell N="TxtHeight" V="${txtH}" F="MAX(Height,${needH} IN)"/>
+      <Cell N="TxtPinX" V="${w * pin}" F="Width*${pin}"/>
+      <Cell N="TxtPinY" V="${h * 0.5}" F="Height*0.5"/>
+      <Cell N="TxtLocPinX" V="${txtW * pin}" F="TxtWidth*${pin}"/>
+      <Cell N="TxtLocPinY" V="${txtH * 0.5}" F="TxtHeight*0.5"/>
+`;
     }
 
     _colorToRGB(color) {
@@ -2674,7 +2781,7 @@ ${shapesXml}
         // Geometry section
         switch (shape.type) {
             case 'rect':
-                sectionsXml += this._rectGeom(w, h, shape.style.rx * this.scale);
+                sectionsXml += this._rectGeom();
                 break;
             case 'circle':
             case 'ellipse':
@@ -2688,7 +2795,7 @@ ${shapesXml}
                 sectionsXml += this._polygonGeom(shape, w, h);
                 break;
             default:
-                sectionsXml += this._rectGeom(w, h, 0);
+                sectionsXml += this._rectGeom();
         }
 
         // Text: one character/paragraph run per source line, referenced from
@@ -2708,7 +2815,7 @@ ${shapesXml}
             for (const run of runs) {
                 const st = run.style || {};
                 const color = this._colorToRGB(st.textColor || st.fill) || '#000000';
-                const size = (st.fontSize || 14) / 72;
+                const size = this._fontSizeInches(st);
                 const bold = st.fontWeight === 'bold' ? '1' : '0';
                 const align = this._horzAlign(st);
 
@@ -2738,6 +2845,8 @@ ${shapesXml}
                 bodyLines.push(`<pp IX="${pIx}"/><cp IX="${cIx}"/>${this._xmlEscape(run.text)}`);
             }
 
+            cellsXml += this._textBlockCells(runs, w, h);
+
             sectionsXml += `
       <Section N="Character">${charRows}
       </Section>
@@ -2754,24 +2863,14 @@ ${cellsXml}${sectionsXml}${textXml}
 `;
     }
 
-    _rectGeom(w, h, rx) {
-        if (rx > 0) {
-            return `
-      <Section N="Geometry" IX="0">
-        <Cell N="NoFill" V="0"/>
-        <Cell N="NoLine" V="0"/>
-        <Row T="MoveTo" IX="1"><Cell N="X" V="0"/><Cell N="Y" V="${rx}"/></Row>
-        <Row T="ArcTo" IX="2"><Cell N="X" V="${rx}"/><Cell N="Y" V="0"/><Cell N="A" V="${rx * 0.4142}"/></Row>
-        <Row T="LineTo" IX="3"><Cell N="X" V="${w - rx}"/><Cell N="Y" V="0"/></Row>
-        <Row T="ArcTo" IX="4"><Cell N="X" V="${w}"/><Cell N="Y" V="${rx}"/><Cell N="A" V="${rx * 0.4142}"/></Row>
-        <Row T="LineTo" IX="5"><Cell N="X" V="${w}"/><Cell N="Y" V="${h - rx}"/></Row>
-        <Row T="ArcTo" IX="6"><Cell N="X" V="${w - rx}"/><Cell N="Y" V="${h}"/><Cell N="A" V="${rx * 0.4142}"/></Row>
-        <Row T="LineTo" IX="7"><Cell N="X" V="${rx}"/><Cell N="Y" V="${h}"/></Row>
-        <Row T="ArcTo" IX="8"><Cell N="X" V="0"/><Cell N="Y" V="${h - rx}"/><Cell N="A" V="${rx * 0.4142}"/></Row>
-        <Row T="LineTo" IX="9"><Cell N="X" V="0"/><Cell N="Y" V="${rx}"/></Row>
-      </Section>`;
-        }
-
+    /**
+     * A rectangle in relative coordinates, so it follows Width and Height.
+     *
+     * Rounded corners are not drawn as arcs here: the Rounding cell rounds the
+     * corners of whatever path a shape has, and a constant radius survives a
+     * resize the way arc coordinates would not.
+     */
+    _rectGeom() {
         return `
       <Section N="Geometry" IX="0">
         <Cell N="NoFill" V="0"/>
@@ -2790,9 +2889,9 @@ ${cellsXml}${sectionsXml}${textXml}
         <Cell N="NoFill" V="0"/>
         <Cell N="NoLine" V="0"/>
         <Row T="Ellipse" IX="1">
-          <Cell N="X" V="${w / 2}"/><Cell N="Y" V="${h / 2}"/>
-          <Cell N="A" V="${w}"/><Cell N="B" V="${h / 2}"/>
-          <Cell N="C" V="${w / 2}"/><Cell N="D" V="${h}"/>
+          ${this._geomCell('X', w / 2, 'Width*0.5')}${this._geomCell('Y', h / 2, 'Height*0.5')}
+          ${this._geomCell('A', w, 'Width*1')}${this._geomCell('B', h / 2, 'Height*0.5')}
+          ${this._geomCell('C', w / 2, 'Width*0.5')}${this._geomCell('D', h, 'Height*1')}
         </Row>
       </Section>`;
     }
@@ -2813,7 +2912,7 @@ ${cellsXml}${sectionsXml}${textXml}
 
     _polygonGeom(shape, w, h) {
         if (!shape.points || shape.points.length < 3) {
-            return this._rectGeom(w, h, 0);
+            return this._rectGeom();
         }
 
         let xml = `
@@ -2829,10 +2928,10 @@ ${cellsXml}${sectionsXml}${textXml}
 
             if (i === 0) {
                 xml += `
-        <Row T="MoveTo" IX="1"><Cell N="X" V="${lx}"/><Cell N="Y" V="${ly}"/></Row>`;
+        <Row T="MoveTo" IX="1">${this._relGeomCell('X', lx, w, 'Width')}${this._relGeomCell('Y', ly, h, 'Height')}</Row>`;
             } else {
                 xml += `
-        <Row T="LineTo" IX="${i + 1}"><Cell N="X" V="${lx}"/><Cell N="Y" V="${ly}"/></Row>`;
+        <Row T="LineTo" IX="${i + 1}">${this._relGeomCell('X', lx, w, 'Width')}${this._relGeomCell('Y', ly, h, 'Height')}</Row>`;
             }
         }
 
@@ -2840,7 +2939,7 @@ ${cellsXml}${sectionsXml}${textXml}
         const lx0 = (pts[0].x - shape.x) * this.scale;
         const ly0 = h - (pts[0].y - shape.y) * this.scale;
         xml += `
-        <Row T="LineTo" IX="${pts.length + 1}"><Cell N="X" V="${lx0}"/><Cell N="Y" V="${ly0}"/></Row>`;
+        <Row T="LineTo" IX="${pts.length + 1}">${this._relGeomCell('X', lx0, w, 'Width')}${this._relGeomCell('Y', ly0, h, 'Height')}</Row>`;
 
         xml += `
       </Section>`;
@@ -2852,11 +2951,13 @@ ${cellsXml}${sectionsXml}${textXml}
         const id = this._nextId();
 
         // Estimate text size from the widest line, not the whole string
-        const fontSize = (text.style.fontSize || 14);
+        const fontSizeInches = this._fontSizeInches(text.style);
         const lines = text.text.split('\n');
+        const runs = lines.map(line => ({ text: line, style: text.style }));
         const longest = lines.reduce((a, b) => (b.length > a.length ? b : a), '');
-        const estWidth = Math.max(longest.length * fontSize * 0.6 * this.scale, 1);
-        const estHeight = Math.max(lines.length, 1) * fontSize * 1.5 * this.scale;
+        const margin = this.textMargin;
+        const estWidth = Math.max(this._lineWidthInches(longest, fontSizeInches) + 2 * margin, 1);
+        const estHeight = 2 * margin + Math.max(lines.length, 1) * fontSizeInches * 1.5;
 
         const pinX = this._svgToVisioX(text.x);
         const pinY = this._svgToVisioY(text.y);
@@ -2866,10 +2967,9 @@ ${cellsXml}${sectionsXml}${textXml}
         // box off the baseline - otherwise every label drifts left and down.
         const horzAlign = this._horzAlign(text.style);
         const locPinX = horzAlign === 1 ? estWidth / 2 : (horzAlign === 2 ? estWidth : 0);
-        const locPinY = estHeight / 2 - 0.35 * fontSize * this.scale;
+        const locPinY = estHeight / 2 - 0.35 * fontSizeInches;
 
         const textColor = this._colorToRGB(text.style.textColor || text.style.fill) || '#000000';
-        const fontSizeInches = fontSize / 72;
         const isBold = text.style.fontWeight === 'bold';
 
         return `    <Shape ID="${id}" Type="Shape" LineStyle="0" FillStyle="0" TextStyle="0">
@@ -2882,7 +2982,7 @@ ${cellsXml}${sectionsXml}${textXml}
       <Cell N="Angle" V="0"/>
       <Cell N="FillPattern" V="0"/>
       <Cell N="LinePattern" V="0"/>
-      <Section N="Character">
+${this._textBlockCells(runs, estWidth, estHeight)}      <Section N="Character">
         <Row IX="0">
           <Cell N="Font" V="1"/>
           <Cell N="Color" V="${textColor}"/>
@@ -2943,10 +3043,10 @@ ${cellsXml}${sectionsXml}${textXml}
 
             if (i === 0) {
                 geomXml += `
-        <Row T="MoveTo" IX="1"><Cell N="X" V="${lx}"/><Cell N="Y" V="${ly}"/></Row>`;
+        <Row T="MoveTo" IX="1">${this._relGeomCell('X', lx, w, 'Width')}${this._relGeomCell('Y', ly, h, 'Height')}</Row>`;
             } else {
                 geomXml += `
-        <Row T="LineTo" IX="${i + 1}"><Cell N="X" V="${lx}"/><Cell N="Y" V="${ly}"/></Row>`;
+        <Row T="LineTo" IX="${i + 1}">${this._relGeomCell('X', lx, w, 'Width')}${this._relGeomCell('Y', ly, h, 'Height')}</Row>`;
             }
         }
 

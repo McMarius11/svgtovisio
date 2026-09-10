@@ -377,6 +377,63 @@ for (const name of Object.keys(parts)) {
 }
 assert(parts['page1.xml'].indexOf('a &lt; b &amp; c') !== -1, 'shape text is XML-escaped');
 
+// Test 15: the output stays editable - shapes that resize, text that fits
+console.log('\n--- Test 15: Editable output ---');
+const editableSvg = '<svg viewBox="0 0 400 200"><style>.lbl{font-size:13px}</style>' +
+    '<rect x="10" y="10" width="120" height="30" rx="8" fill="#fff" stroke="#000"/>' +
+    '<text x="15" y="30" class="lbl">A label far wider than its own box</text>' +
+    '<text x="200" y="20" class="lbl">Free floating</text>' +
+    '<ellipse cx="300" cy="100" rx="60" ry="30" fill="#fff" stroke="#000"/>' +
+    '<polygon points="20,150 80,150 50,190" fill="#eee" stroke="#000"/></svg>';
+const editableXml = new VsdxBuilder(new SvgParser(editableSvg).parse())._page1();
+const editableDoc = domParser.parseFromString(editableXml, 'application/xml');
+const cellV = (shape, name) => {
+    const c = shape && shape.querySelector(`Cell[N="${name}"]`);
+    return c ? parseFloat(c.getAttribute('V')) : null;
+};
+const cellF = (shape, name) => {
+    const c = shape && shape.querySelector(`Cell[N="${name}"]`);
+    return c ? String(c.getAttribute('F')) : '';
+};
+
+// Visio resizes a shape by rewriting Width and Height and re-evaluating the
+// geometry. A coordinate held as a plain number has nothing to re-evaluate, so
+// the outline stays its original size while the selection frame grows - which
+// is what "I cannot drag this tile any bigger" looks like.
+let frozenCells = 0;
+for (const row of Array.from(editableDoc.querySelectorAll('Section[N="Geometry"] Row'))) {
+    if (String(row.getAttribute('T')).indexOf('Rel') === 0) continue;
+    for (const geomCell of Array.from(row.querySelectorAll('Cell'))) {
+        if (!geomCell.getAttribute('F')) frozenCells++;
+    }
+}
+assert(frozenCells === 0,
+    `absolute geometry scales with Width/Height (got ${frozenCells} frozen cells)`);
+
+// A font size is in user units like every other length, so it converts with
+// the same scale. Treating it as points made every label 96/72 too large.
+const fontSizes = (editableXml.match(/N="Size" V="([\d.]+)"/g) || [])
+    .map(m => parseFloat(/V="([\d.]+)"/.exec(m)[1]));
+assert(fontSizes.length === 2 && fontSizes.every(v => Math.abs(v - 13 / 96) < 1e-9),
+    `13px text becomes ${13 / 96} in, not ${13 / 72} in (got ${fontSizes.join(', ')})`);
+
+// The label is wider than its box. Visio wraps shape text at the shape width,
+// so without a wider text block it breaks into two lines and spills out of a
+// tile only one line tall.
+const labelled = Array.from(editableDoc.querySelectorAll('Shape')).find(s => {
+    const t = s.querySelector('Text');
+    return t && t.textContent.indexOf('far wider') !== -1;
+});
+assert(labelled && cellV(labelled, 'TxtWidth') > cellV(labelled, 'Width'),
+    'a label wider than its box widens the text block instead of wrapping');
+assert(labelled && Math.abs(cellV(labelled, 'LeftMargin') - 4 / 96) < 1e-9,
+    'text margins are in drawing units, not Visio\'s unscaled 4pt default');
+assert(/ IN\)/.test(cellF(labelled, 'TxtWidth')),
+    'the text block formula names its unit, so a metric Visio reads it too');
+assert(cellV(labelled, 'Rounding') > 0 &&
+    editableDoc.querySelector('Row[T="ArcTo"]') === null,
+    'a rounded rect rounds via the Rounding cell, keeping a resizable outline');
+
 // Full package, built the same way the browser builds it
 (async () => {
     try {

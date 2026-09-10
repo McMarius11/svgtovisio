@@ -78,8 +78,9 @@ function preview(inputPath) {
 
         // Character and paragraph runs, referenced from <Text> by <cp>/<pp>
         const charRows = Array.from(shape.querySelectorAll('Section[N="Character"] Row')).map(r => ({
-            size: (parseFloat((r.querySelector('Cell[N="Size"]') || { getAttribute: () => '0.19' })
-                .getAttribute('V')) || 0.19) * 72,
+            // The Size cell is in inches, like every other length in the page
+            size: (parseFloat((r.querySelector('Cell[N="Size"]') || { getAttribute: () => '0.14' })
+                .getAttribute('V')) || 0.14) * PX_PER_INCH,
             color: (r.querySelector('Cell[N="Color"]') || { getAttribute: () => '#000000' }).getAttribute('V'),
             bold: (r.querySelector('Cell[N="Style"]') || { getAttribute: () => '0' }).getAttribute('V') === '1'
         }));
@@ -138,12 +139,21 @@ function preview(inputPath) {
         }
 
         if (runs.length) {
+            // Text sits in its own block, which is at least as wide as the
+            // text needs - so a long label overflows on one line here the way
+            // it will in Visio, rather than silently fitting the shape.
+            const txtW = num(shape, 'TxtWidth', w / PX_PER_INCH) * PX_PER_INCH;
+            const txtPinX = num(shape, 'TxtPinX', w / PX_PER_INCH / 2) * PX_PER_INCH;
+            const txtLocPinX = num(shape, 'TxtLocPinX', txtW / PX_PER_INCH / 2) * PX_PER_INCH;
+            const txtLeft = left + txtPinX - txtLocPinX;
+            const margin = num(shape, 'LeftMargin', 3 / PX_PER_INCH) * PX_PER_INCH;
             const lineHeight = (charRows[0] ? charRows[0].size : 12) * 1.25;
             let y = top + h / 2 - (runs.length * lineHeight) / 2 + lineHeight * 0.75;
             for (const run of runs) {
                 const align = run.align === undefined ? 1 : run.align;
                 const anchor = align === 0 ? 'start' : (align === 2 ? 'end' : 'middle');
-                const x = align === 0 ? left + 3 : (align === 2 ? left + w - 3 : left + w / 2);
+                const x = align === 0 ? txtLeft + margin
+                    : (align === 2 ? txtLeft + txtW - margin : txtLeft + txtW / 2);
                 out += `<text x="${x}" y="${y}" font-size="${run.char.size}" fill="${run.char.color}" ` +
                     `text-anchor="${anchor}"${run.char.bold ? ' font-weight="bold"' : ''}>${esc(run.text)}</text>`;
                 y += lineHeight;
