@@ -42,6 +42,7 @@
       "height": 220,
       "id": null,
       "isContainer": true,
+      "parentShape": null,
       "style": {
         "fill": "#F7FBFF",
         "fillOpacity": 1,
@@ -70,6 +71,7 @@
       "height": 90,
       "id": null,
       "isContainer": false,
+      "parentShape": 0,
       "style": {
         "fill": "#FFFFFF",
         "fillOpacity": 1,
@@ -152,6 +154,7 @@
       "height": 90,
       "id": null,
       "isContainer": false,
+      "parentShape": 0,
       "style": {
         "fill": "#FFFFFF",
         "fillOpacity": 1,
@@ -214,6 +217,7 @@
   "texts": [
     {
       "id": null,
+      "parentShape": null,
       "standalone": false,
       "style": {
         "fill": "#009640",
@@ -237,6 +241,7 @@
     },
     {
       "id": null,
+      "parentShape": 0,
       "standalone": false,
       "style": {
         "fill": "#333333",

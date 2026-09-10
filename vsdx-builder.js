@@ -445,23 +445,32 @@ class VsdxBuilder {
 
     _page1() {
         let shapesXml = '';
-        this.shapeIds = [];
         this.connectorLinks = [];
+        // Building the page twice must produce the same IDs
+        this.shapeIdCounter = 1;
 
-        // Render shapes first (so we have their IDs for connectors)
-        for (let i = 0; i < this.data.shapes.length; i++) {
-            const shape = this.data.shapes[i];
-            const id = this._nextId();
-            this.shapeIds[i] = id;
-            shapesXml += this._buildShape(shape, id);
+        // IDs before geometry: a connector may glue to a box nested three
+        // frames deep, and <Connects> needs that ID before the tree is walked.
+        this.shapeIds = this.data.shapes.map(() => this._nextId());
+        this.textIds = this.data.texts.map(() => this._nextId());
+
+        this.childShapes = new Map();
+        this.childTexts = new Map();
+        this.data.shapes.forEach((shape, i) => this._addChild(this.childShapes, shape.parentShape, i));
+        this.data.texts.forEach((text, i) => this._addChild(this.childTexts, text.parentShape, i));
+
+        // The page itself is the outermost coordinate system
+        const pageOrigin = { x: 0, y: 0 };
+        for (const i of (this.childShapes.get(null) || [])) {
+            shapesXml += this._buildShapeTree(i, pageOrigin);
+        }
+        for (const i of (this.childTexts.get(null) || [])) {
+            shapesXml += this._buildTextShape(this.data.texts[i], this.textIds[i], pageOrigin);
         }
 
-        // Render standalone texts
-        for (const text of this.data.texts) {
-            shapesXml += this._buildTextShape(text);
-        }
-
-        // Render connectors
+        // Connectors stay on the page even when both ends sit inside frames:
+        // page-level glue reaches a shape at any depth, and a connector that
+        // crosses a frame boundary belongs to neither frame.
         for (const conn of this.data.connectors) {
             const id = this._nextId();
             shapesXml += this._buildConnector(conn, id);
@@ -507,12 +516,83 @@ ${shapesXml}
 </PageContents>`;
     }
 
-    _buildShape(shape, id) {
+    /** Group children by their parent index, with null for the page itself. */
+    _addChild(map, parent, index) {
+        const key = parent === undefined ? null : parent;
+        if (!map.has(key)) map.set(key, []);
+        map.get(key).push(index);
+    }
+
+    /** A shape's box in absolute Visio inches. */
+    _shapeBox(shape) {
+        return {
+            w: shape.width * this.scale,
+            h: shape.height * this.scale,
+            left: this._svgToVisioX(shape.x),
+            bottom: this._svgToVisioY(shape.y + shape.height)
+        };
+    }
+
+    /**
+     * A shape and everything the layout stage nested inside it.
+     *
+     * A frame with contents becomes a group, so dragging the frame takes its
+     * contents along instead of sliding out from under them. A frame with
+     * nothing inside it stays an ordinary shape - a group of one would only
+     * make it harder to select.
+     */
+    _buildShapeTree(index, origin) {
+        const shape = this.data.shapes[index];
+        const kidShapes = this.childShapes.get(index) || [];
+        const kidTexts = this.childTexts.get(index) || [];
+
+        if (!kidShapes.length && !kidTexts.length) {
+            return this._buildShape(shape, this.shapeIds[index], origin, '');
+        }
+
+        // A group's children are placed in the group's own coordinate system,
+        // whose origin is the group's lower-left corner.
+        const box = this._shapeBox(shape);
+        const inner = { x: box.left, y: box.bottom };
+        let childrenXml = '';
+        for (const i of kidShapes) childrenXml += this._buildShapeTree(i, inner);
+        for (const i of kidTexts) {
+            childrenXml += this._buildTextShape(this.data.texts[i], this.textIds[i], inner);
+        }
+
+        return this._buildShape(shape, this.shapeIds[index], origin, childrenXml);
+    }
+
+    /**
+     * The cells that make a group a Visio container rather than a plain group.
+     *
+     * A container moves its members with it and still lets a single click
+     * select a member, instead of making you step into the group first. Visio
+     * drives that from this user-defined cell; a Visio that does not act on it
+     * falls back to ordinary group behaviour, which already fixes a frame
+     * dragging out from under its contents. Nothing here changes the layout
+     * either way.
+     */
+    _containerSection() {
+        return `
+      <Section N="User">
+        <Row N="msvStructureType"><Cell N="Value" V="Container"/><Cell N="Prompt" V=""/></Row>
+      </Section>`;
+    }
+
+    /**
+     * @param {any} shape
+     * @param {number} id
+     * @param {{x: number, y: number}} origin the coordinate system to place it in
+     * @param {string} childrenXml nested shapes, or '' for a leaf
+     */
+    _buildShape(shape, id, origin, childrenXml) {
         // Center position in Visio coordinates (inches, bottom-left origin)
-        const w = shape.width * this.scale;
-        const h = shape.height * this.scale;
-        const pinX = this._svgToVisioX(shape.x) + w / 2;
-        const pinY = this._svgToVisioY(shape.y + shape.height) + h / 2;
+        const box = this._shapeBox(shape);
+        const w = box.w;
+        const h = box.h;
+        const pinX = box.left - origin.x + w / 2;
+        const pinY = box.bottom - origin.y + h / 2;
 
         const fillColor = this._colorToRGB(shape.style.fill);
         const lineColor = this._colorToRGB(shape.style.stroke);
@@ -643,6 +723,16 @@ ${shapesXml}
       <Text>${bodyLines.join('\n')}</Text>`;
         }
 
+        if (childrenXml) {
+            sectionsXml += this._containerSection();
+            return `    <Shape ID="${id}" Type="Group" LineStyle="0" FillStyle="0" TextStyle="0">
+${cellsXml}${sectionsXml}${textXml}
+      <Shapes>
+${childrenXml}      </Shapes>
+    </Shape>
+`;
+        }
+
         return `    <Shape ID="${id}" Type="Shape" LineStyle="0" FillStyle="0" TextStyle="0">
 ${cellsXml}${sectionsXml}${textXml}
     </Shape>
@@ -733,9 +823,12 @@ ${cellsXml}${sectionsXml}${textXml}
         return xml;
     }
 
-    _buildTextShape(text) {
-        const id = this._nextId();
-
+    /**
+     * @param {any} text
+     * @param {number} id
+     * @param {{x: number, y: number}} origin the coordinate system to place it in
+     */
+    _buildTextShape(text, id, origin) {
         // Estimate text size from the widest line, not the whole string
         const fontSizeInches = this._fontSizeInches(text.style);
         const lines = text.text.split('\n');
@@ -745,8 +838,8 @@ ${cellsXml}${sectionsXml}${textXml}
         const estWidth = Math.max(this._lineWidthInches(longest, fontSizeInches) + 2 * margin, 1);
         const estHeight = 2 * margin + Math.max(lines.length, 1) * fontSizeInches * 1.5;
 
-        const pinX = this._svgToVisioX(text.x);
-        const pinY = this._svgToVisioY(text.y);
+        const pinX = this._svgToVisioX(text.x) - origin.x;
+        const pinY = this._svgToVisioY(text.y) - origin.y;
 
         // In SVG, x is the anchor point and y is the baseline. Visio positions a
         // box by its local pin, so move the pin to match the anchor and lift the
@@ -786,26 +879,49 @@ ${this._textBlockCells(runs, estWidth, estHeight)}      <Section N="Character">
 `;
     }
 
+    /**
+     * A connector, as a Visio 1-D shape.
+     *
+     * Visio only treats a shape as a connector - and only honours the glue
+     * recorded in <Connects> - when OneD is set. Without it the Begin/End
+     * cells describe endpoints of a shape that has none, so the arrows sat on
+     * the page unattached and stayed behind when a box moved.
+     *
+     * A 1-D shape lives in the frame its own endpoints define: local X runs
+     * from the begin point to the end point, local Y is the perpendicular
+     * offset. Elbows therefore survive as drawn, and because the XForm cells
+     * are formulas over Begin/End, moving a glued box re-places the endpoint
+     * and the whole route follows.
+     */
     _buildConnector(conn, id) {
         const pts = conn.points;
         if (pts.length < 2) return '';
 
-        const startPt = pts[0];
-        const endPt = pts[pts.length - 1];
+        // Visio coordinates, y growing upwards, before any local frame
+        const vpts = pts.map(p => ({ x: this._svgToVisioX(p.x), y: this._svgToVisioY(p.y) }));
+        const begin = vpts[0];
+        const end = vpts[vpts.length - 1];
 
-        // Calculate bounding box
-        let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-        for (const p of pts) {
-            minX = Math.min(minX, p.x);
-            minY = Math.min(minY, p.y);
-            maxX = Math.max(maxX, p.x);
-            maxY = Math.max(maxY, p.y);
-        }
+        const spanX = end.x - begin.x;
+        const spanY = end.y - begin.y;
+        const length = Math.hypot(spanX, spanY);
+        // A connector whose ends coincide has no direction to lay a local
+        // frame along; keep it visible rather than dividing by zero.
+        const w = Math.max(length, 0.01);
+        const angle = length > 0 ? Math.atan2(spanY, spanX) : 0;
+        const cos = Math.cos(angle);
+        const sin = Math.sin(angle);
 
-        const w = Math.max((maxX - minX) * this.scale, 0.01);
-        const h = Math.max((maxY - minY) * this.scale, 0.01);
-        const pinX = this._svgToVisioX(minX) + w / 2;
-        const pinY = this._svgToVisioY(maxY) + h / 2;
+        const local = vpts.map(p => {
+            const dx = p.x - begin.x;
+            const dy = p.y - begin.y;
+            return { x: dx * cos + dy * sin, y: -dx * sin + dy * cos };
+        });
+
+        // Height is the route's perpendicular extent, doubled so the line
+        // itself keeps Visio's usual place at half the shape's height.
+        const perp = local.reduce((m, p) => Math.max(m, Math.abs(p.y)), 0);
+        const h = 2 * perp;
 
         const lineColor = this._colorToRGB(conn.style.stroke) || '#000000';
         const lineWeight = (conn.style.strokeWidth || 1) * this.scale;
@@ -817,40 +933,36 @@ ${this._textBlockCells(runs, estWidth, estHeight)}      <Section N="Character">
         const beginArrow = conn.arrowStart ? '5' : '0';
         const endArrow = conn.arrowEnd ? '5' : '0';
 
-        // Build geometry
         let geomXml = `
       <Section N="Geometry" IX="0">
         <Cell N="NoFill" V="1"/>
         <Cell N="NoLine" V="0"/>`;
 
-        for (let i = 0; i < pts.length; i++) {
-            const lx = (pts[i].x - minX) * this.scale;
-            const ly = h - (pts[i].y - minY) * this.scale;
-
-            if (i === 0) {
-                geomXml += `
-        <Row T="MoveTo" IX="1">${this._relGeomCell('X', lx, w, 'Width')}${this._relGeomCell('Y', ly, h, 'Height')}</Row>`;
-            } else {
-                geomXml += `
-        <Row T="LineTo" IX="${i + 1}">${this._relGeomCell('X', lx, w, 'Width')}${this._relGeomCell('Y', ly, h, 'Height')}</Row>`;
-            }
-        }
+        local.forEach((p, i) => {
+            const ly = h / 2 + p.y;
+            const row = i === 0 ? 'MoveTo' : 'LineTo';
+            geomXml += `
+        <Row T="${row}" IX="${i + 1}">${this._relGeomCell('X', p.x, w, 'Width')}${this._relGeomCell('Y', ly, h, 'Height')}</Row>`;
+        });
 
         geomXml += `
       </Section>`;
 
+        // The XForm follows the endpoints, the way Visio's own connectors do,
+        // so re-gluing an end moves and re-aims the whole shape.
         return `    <Shape ID="${id}" Type="Shape" LineStyle="0" FillStyle="0" TextStyle="0">
-      <Cell N="PinX" V="${pinX}"/>
-      <Cell N="PinY" V="${pinY}"/>
-      <Cell N="Width" V="${w}"/>
+      <Cell N="OneD" V="1"/>
+      <Cell N="BeginX" V="${begin.x}"/>
+      <Cell N="BeginY" V="${begin.y}"/>
+      <Cell N="EndX" V="${end.x}"/>
+      <Cell N="EndY" V="${end.y}"/>
+      <Cell N="PinX" V="${(begin.x + end.x) / 2}" F="(BeginX+EndX)/2"/>
+      <Cell N="PinY" V="${(begin.y + end.y) / 2}" F="(BeginY+EndY)/2"/>
+      <Cell N="Width" V="${w}" F="SQRT((EndX-BeginX)^2+(EndY-BeginY)^2)"/>
       <Cell N="Height" V="${h}"/>
-      <Cell N="LocPinX" V="${w / 2}"/>
-      <Cell N="LocPinY" V="${h / 2}"/>
-      <Cell N="Angle" V="0"/>
-      <Cell N="BeginX" V="${this._svgToVisioX(startPt.x)}"/>
-      <Cell N="BeginY" V="${this._svgToVisioY(startPt.y)}"/>
-      <Cell N="EndX" V="${this._svgToVisioX(endPt.x)}"/>
-      <Cell N="EndY" V="${this._svgToVisioY(endPt.y)}"/>
+      <Cell N="LocPinX" V="${w / 2}" F="Width*0.5"/>
+      <Cell N="LocPinY" V="${h / 2}" F="Height*0.5"/>
+      <Cell N="Angle" V="${angle}" F="ATAN2(EndY-BeginY,EndX-BeginX)"/>
       <Cell N="FillPattern" V="0"/>
       <Cell N="LineWeight" V="${lineWeight}"/>
       <Cell N="LineColor" V="${lineColor}"/>

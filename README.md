@@ -23,10 +23,11 @@ Convert SVG diagrams and Draw.io files to editable Visio (.vsdx) files — direc
 ## What gets preserved
 
 - **Shapes** — rectangles, rounded rectangles, circles, ellipses, diamonds, polygons
-- **Connectors & Arrows** — lines, polylines, paths with arrowheads on either or both ends, glued to source/target shapes
+- **Connectors & Arrows** — lines, polylines, paths with arrowheads on either or both ends, as real Visio 1-D connectors glued to their source and target, so moving a box takes its arrows along
 - **Text** — labels inside shapes, standalone text, multi-line text, `<tspan>` lines, per-line font size, weight, colour and alignment
 - **Styles** — CSS `<style>` blocks and `class` attributes, inherited properties, fill and stroke colours, line width, dash patterns (dashed / dotted / dash-dot), fill and stroke opacity, font size, bold
-- **Layout** — positions and sizes converted to Visio coordinates, including the `viewBox` origin
+- **Frames** — a box drawn around other shapes becomes a Visio group that declares itself a container, so dragging a subnet or a VNet moves everything inside it
+- **Layout** — positions and sizes converted to Visio coordinates, including the `viewBox` origin; shapes stay resizable because their geometry is written as formulas over `Width` and `Height`
 - **Transforms** — `translate`, `scale`, `rotate`, `skew` and `matrix`, composed correctly through nested groups
 - **References** — `<use>` is expanded; gradients are flattened to a single colour
 
@@ -57,7 +58,7 @@ between the stages:
 | `svg-style.js` | The CSS cascade, inheritance and paint servers | yes |
 | `svg-parser.js` | Walks the SVG DOM and produces a scene | yes |
 | `drawio-parser.js` | Walks the Draw.io model and produces a scene | yes |
-| `scene-layout.js` | Frame detection, label assignment, connector gluing | no |
+| `scene-layout.js` | Frame detection, label assignment, nesting, connector gluing | no |
 | `vsdx-builder.js` | Scene to an OPC package | no |
 | `app.js` | Browser UI | yes |
 

@@ -29,6 +29,13 @@ const SceneLayout = {
         labelPadding: 2,
 
         /**
+         * Slack, in user units, when testing whether a shape sits inside a
+         * frame. A tile drawn flush with its frame's edge still belongs to it,
+         * and drawings round their coordinates.
+         */
+        nestPadding: 1,
+
+        /**
          * The connector glue radius is this fraction of the drawing's
          * diagonal, clamped below. A fixed radius is far too coarse on a small
          * drawing and far too tight on a large one.
@@ -39,8 +46,10 @@ const SceneLayout = {
     }),
 
     /**
-     * Run every heuristic over a scene, in order. Containers must be known
-     * before labels are assigned, and labels before connectors are glued.
+     * Run every heuristic over a scene, in order.      * Containers must be known
+     * before labels are assigned, labels before nesting (so a label folded
+     * into a box is not also nested as a loose text), and all of it before
+     * connectors are glued.
      * @param {any} scene
      * @param {any} [tuning]
      */
@@ -48,6 +57,7 @@ const SceneLayout = {
         const t = tuning || this.TUNING;
         this.markContainers(scene, t);
         this.associateTexts(scene, t);
+        this.nest(scene, t);
         this.glueConnectors(scene, t);
         return scene;
     },
@@ -80,6 +90,61 @@ const SceneLayout = {
                     break;
                 }
             }
+        }
+    },
+
+    /**
+     * Give every shape and loose text the frame it sits in.
+     *
+     * A drawing's frames are the whole structure a reader sees - a subnet
+     * inside a VNet inside a subscription - but on the page they are just
+     * rectangles that happen to be drawn around other rectangles. Recording
+     * the containment lets the builder emit real groups, so dragging a frame
+     * takes its contents along instead of sliding out from under them.
+     *
+     * Only frames adopt, and only frames strictly larger than the child: that
+     * ordering by area is what makes a parent chain impossible to loop.
+     */
+    nest(scene, tuning) {
+        const PAD = tuning.nestPadding;
+
+        const frames = [];
+        scene.shapes.forEach((shape, i) => {
+            // A rotated frame would turn its children with it, and the child
+            // coordinates are axis-aligned, so leave those flat.
+            if (shape.isContainer && !shape.angle) {
+                frames.push({ index: i, shape, area: shape.width * shape.height });
+            }
+        });
+
+        /** The innermost frame enclosing this box, or null. */
+        const hostOf = (x, y, width, height, ownIndex, ownArea) => {
+            let best = null;
+            let bestArea = Infinity;
+            for (const frame of frames) {
+                if (frame.index === ownIndex) continue;
+                if (frame.area <= ownArea) continue;
+                const f = frame.shape;
+                if (x < f.x - PAD || y < f.y - PAD ||
+                    x + width > f.x + f.width + PAD ||
+                    y + height > f.y + f.height + PAD) continue;
+                if (frame.area < bestArea) {
+                    bestArea = frame.area;
+                    best = frame.index;
+                }
+            }
+            return best;
+        };
+
+        scene.shapes.forEach((shape, i) => {
+            shape.parentShape = hostOf(shape.x, shape.y, shape.width, shape.height,
+                                       i, shape.width * shape.height);
+        });
+
+        // A text has no extent of its own worth testing - its anchor decides,
+        // the same way associateTexts decides which box owns a label.
+        for (const text of scene.texts) {
+            text.parentShape = hostOf(text.x, text.y, 0, 0, -1, 0);
         }
     },
 

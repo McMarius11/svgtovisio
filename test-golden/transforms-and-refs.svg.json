@@ -109,6 +109,7 @@
       "height": 40,
       "id": null,
       "isContainer": false,
+      "parentShape": null,
       "style": {
         "fill": "#ffffff",
         "fillOpacity": 1,
@@ -137,6 +138,7 @@
       "height": 30,
       "id": null,
       "isContainer": false,
+      "parentShape": null,
       "style": {
         "fill": "#cccccc",
         "fillOpacity": 1,
@@ -165,6 +167,7 @@
       "height": 50,
       "id": null,
       "isContainer": false,
+      "parentShape": null,
       "style": {
         "fill": "#800080",
         "fillOpacity": 1,
@@ -193,6 +196,7 @@
       "height": 40,
       "id": null,
       "isContainer": false,
+      "parentShape": null,
       "style": {
         "fill": "none",
         "fillOpacity": 1,
@@ -221,6 +225,7 @@
       "height": 20,
       "id": "stamp",
       "isContainer": false,
+      "parentShape": null,
       "style": {
         "fill": "#eeeeee",
         "fillOpacity": 1,
@@ -248,6 +253,7 @@
   "texts": [
     {
       "id": null,
+      "parentShape": null,
       "standalone": false,
       "style": {
         "fill": "none",
@@ -271,6 +277,7 @@
     },
     {
       "id": null,
+      "parentShape": null,
       "standalone": false,
       "style": {
         "fill": "none",
@@ -294,6 +301,7 @@
     },
     {
       "id": null,
+      "parentShape": null,
       "standalone": false,
       "style": {
         "fill": "none",

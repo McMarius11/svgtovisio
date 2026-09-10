@@ -38,12 +38,27 @@ function preview(inputPath) {
 
     const pageW = builder.pageWidthInches;
     const pageH = builder.pageHeightInches;
+    // Every lookup is scoped to the shape's own children: a group holds its
+    // members' cells too, and a deep query would read a child's PinX as the
+    // group's own.
+    const own = (shape, tag, name) => Array.from(shape.children).find(
+        c => c.nodeName === tag && c.getAttribute('N') === name) || null;
+    const kids = (parent, tag) => (parent
+        ? Array.from(parent.children).filter(c => c.nodeName === tag) : []);
     const cell = (shape, name) => {
-        const c = shape.querySelector(`Cell[N="${name}"]`);
+        const c = own(shape, 'Cell', name);
         return c ? c.getAttribute('V') : null;
     };
     const num = (shape, name, fallback) => {
         const v = parseFloat(cell(shape, name));
+        return isNaN(v) ? fallback : v;
+    };
+    const rowCell = (row, name) => {
+        const c = own(row, 'Cell', name);
+        return c ? c.getAttribute('V') : null;
+    };
+    const rowNum = (row, name, fallback) => {
+        const v = parseFloat(rowCell(row, name));
         return isNaN(v) ? fallback : v;
     };
 
@@ -54,15 +69,31 @@ function preview(inputPath) {
         `<path d="M0,0 L10,5 L0,10 z" fill="context-stroke"/></marker></defs>` +
         `<rect width="100%" height="100%" fill="#ffffff"/>`;
 
-    for (const shape of Array.from(doc.querySelectorAll('Shape'))) {
-        const w = num(shape, 'Width', 0) * PX_PER_INCH;
-        const h = num(shape, 'Height', 0) * PX_PER_INCH;
-        const pinX = num(shape, 'PinX', 0) * PX_PER_INCH;
-        const pinY = num(shape, 'PinY', 0) * PX_PER_INCH;
-        const locX = num(shape, 'LocPinX', w / PX_PER_INCH / 2) * PX_PER_INCH;
-        const locY = num(shape, 'LocPinY', h / PX_PER_INCH / 2) * PX_PER_INCH;
-        const left = pinX - locX;
-        const top = pageH * PX_PER_INCH - (pinY - locY + h);
+    // Page inches (y up) to SVG pixels (y down)
+    const px = (x) => x * PX_PER_INCH;
+    const py = (y) => (pageH - y) * PX_PER_INCH;
+
+    /**
+     * Draw one shape, then whatever is nested inside it.
+     *
+     * @param {any} shape
+     * @param {number} ox origin of the enclosing group, in page inches
+     * @param {number} oy
+     */
+    function render(shape, ox, oy) {
+        const wIn = num(shape, 'Width', 0);
+        const hIn = num(shape, 'Height', 0);
+        const locX = num(shape, 'LocPinX', wIn / 2);
+        const locY = num(shape, 'LocPinY', hIn / 2);
+        // The group chain is always axis-aligned - nesting into a rotated
+        // frame is refused upstream - so a parent contributes a translation.
+        const leftIn = ox + num(shape, 'PinX', 0) - locX;
+        const bottomIn = oy + num(shape, 'PinY', 0) - locY;
+
+        const w = px(wIn);
+        const h = px(hIn);
+        const left = px(leftIn);
+        const top = py(bottomIn + hIn);
 
         const fillPattern = num(shape, 'FillPattern', 1);
         const linePattern = num(shape, 'LinePattern', 1);
@@ -76,19 +107,21 @@ function preview(inputPath) {
             ? ` transform="rotate(${(-angle * 180 / Math.PI).toFixed(3)} ${left + w / 2} ${top + h / 2})"`
             : '';
 
+        const geometry = own(shape, 'Section', 'Geometry');
+        const geomRows = kids(geometry, 'Row');
+
         // Character and paragraph runs, referenced from <Text> by <cp>/<pp>
-        const charRows = Array.from(shape.querySelectorAll('Section[N="Character"] Row')).map(r => ({
+        const charRows = kids(own(shape, 'Section', 'Character'), 'Row').map(r => ({
             // The Size cell is in inches, like every other length in the page
-            size: (parseFloat((r.querySelector('Cell[N="Size"]') || { getAttribute: () => '0.14' })
-                .getAttribute('V')) || 0.14) * PX_PER_INCH,
-            color: (r.querySelector('Cell[N="Color"]') || { getAttribute: () => '#000000' }).getAttribute('V'),
-            bold: (r.querySelector('Cell[N="Style"]') || { getAttribute: () => '0' }).getAttribute('V') === '1'
+            size: rowNum(r, 'Size', 0.14) * PX_PER_INCH,
+            color: rowCell(r, 'Color') || '#000000',
+            bold: rowCell(r, 'Style') === '1'
         }));
-        const paraRows = Array.from(shape.querySelectorAll('Section[N="Paragraph"] Row')).map(r =>
-            parseInt((r.querySelector('Cell[N="HorzAlign"]') || { getAttribute: () => '1' }).getAttribute('V'), 10));
+        const paraRows = kids(own(shape, 'Section', 'Paragraph'), 'Row')
+            .map(r => rowNum(r, 'HorzAlign', 1));
 
         const runs = [];
-        const textEl = shape.querySelector('Text');
+        const textEl = Array.from(shape.children).find(c => c.nodeName === 'Text');
         if (textEl) {
             let charIx = 0;
             let paraIx = 0;
@@ -107,18 +140,21 @@ function preview(inputPath) {
             }
         }
 
-        // Connectors carry Begin/End coordinates; everything else is a shape
-        if (cell(shape, 'BeginX') !== null) {
-            const geometry = shape.querySelector('Section[N="Geometry"]');
+        // A 1-D shape carries its route in a frame that runs along its own
+        // endpoints, so its geometry has to be rotated, not just offset.
+        if (cell(shape, 'OneD') === '1') {
+            const cos = Math.cos(angle);
+            const sin = Math.sin(angle);
+            const pinXIn = ox + num(shape, 'PinX', 0);
+            const pinYIn = oy + num(shape, 'PinY', 0);
             const points = [];
-            if (geometry) {
-                for (const row of Array.from(geometry.querySelectorAll('Row'))) {
-                    const x = parseFloat((row.querySelector('Cell[N="X"]') || { getAttribute: () => null }).getAttribute('V'));
-                    const y = parseFloat((row.querySelector('Cell[N="Y"]') || { getAttribute: () => null }).getAttribute('V'));
-                    if (!isNaN(x) && !isNaN(y)) {
-                        points.push(`${left + x * PX_PER_INCH},${top + h - y * PX_PER_INCH}`);
-                    }
-                }
+            for (const row of geomRows) {
+                const x = parseFloat(rowCell(row, 'X'));
+                const y = parseFloat(rowCell(row, 'Y'));
+                if (isNaN(x) || isNaN(y)) continue;
+                const dx = x - locX;
+                const dy = y - locY;
+                points.push(`${px(pinXIn + dx * cos - dy * sin)},${py(pinYIn + dx * sin + dy * cos)}`);
             }
             if (points.length >= 2) {
                 const head = cell(shape, 'EndArrow') !== '0' ? ' marker-end="url(#a)"' : '';
@@ -126,10 +162,10 @@ function preview(inputPath) {
                 out += `<polyline points="${points.join(' ')}" fill="none" stroke="${stroke}" ` +
                     `stroke-width="${lineWeight}"${dashAttr}${head}${tail}/>`;
             }
-            continue;
+            return;
         }
 
-        const isEllipse = shape.querySelector('Row[T="Ellipse"]') !== null;
+        const isEllipse = geomRows.some(r => r.getAttribute('T') === 'Ellipse');
         if (fillPattern !== 0 || linePattern !== 0) {
             out += isEllipse
                 ? `<ellipse cx="${left + w / 2}" cy="${top + h / 2}" rx="${w / 2}" ry="${h / 2}" ` +
@@ -142,8 +178,8 @@ function preview(inputPath) {
             // Text sits in its own block, which is at least as wide as the
             // text needs - so a long label overflows on one line here the way
             // it will in Visio, rather than silently fitting the shape.
-            const txtW = num(shape, 'TxtWidth', w / PX_PER_INCH) * PX_PER_INCH;
-            const txtPinX = num(shape, 'TxtPinX', w / PX_PER_INCH / 2) * PX_PER_INCH;
+            const txtW = num(shape, 'TxtWidth', wIn) * PX_PER_INCH;
+            const txtPinX = num(shape, 'TxtPinX', wIn / 2) * PX_PER_INCH;
             const txtLocPinX = num(shape, 'TxtLocPinX', txtW / PX_PER_INCH / 2) * PX_PER_INCH;
             const txtLeft = left + txtPinX - txtLocPinX;
             const margin = num(shape, 'LeftMargin', 3 / PX_PER_INCH) * PX_PER_INCH;
@@ -159,6 +195,15 @@ function preview(inputPath) {
                 y += lineHeight;
             }
         }
+
+        // Group members are placed in the group's own coordinate system
+        for (const child of kids(Array.from(shape.children).find(c => c.nodeName === 'Shapes'), 'Shape')) {
+            render(child, leftIn, bottomIn);
+        }
+    }
+
+    for (const shape of kids(kids(doc.documentElement, 'Shapes')[0], 'Shape')) {
+        render(shape, 0, 0);
     }
 
     out += '</svg>';

@@ -55,6 +55,7 @@
  * @property {TextRun[]}   textRuns     one entry per source line
  * @property {Style|null}  textStyle    dominant run's style
  * @property {boolean} isContainer      encloses other shapes; never labelled or glued to
+ * @property {number|null} parentShape   index of the frame this sits inside
  * @property {Point[]} [points]         polygon / path outline
  * @property {string}  [d]              original path data
  */
@@ -83,6 +84,7 @@
  * @property {boolean} standalone  the parser already decided this text is
  *                                 free-floating; the layout stage must not
  *                                 fold it into a shape
+ * @property {number|null} parentShape   index of the frame this sits inside
  */
 
 /**
@@ -155,6 +157,7 @@ const SceneModel = {
             if (shape.angle === undefined) shape.angle = 0;
             if (shape.text === undefined) shape.text = null;
             if (shape.isContainer === undefined) shape.isContainer = false;
+            if (shape.parentShape === undefined) shape.parentShape = null;
             if (shape.textStyle === undefined) shape.textStyle = null;
             if (!shape.textRuns) {
                 shape.textRuns = shape.text
@@ -178,6 +181,7 @@ const SceneModel = {
             text.style = Object.assign(this.defaultStyle(), text.style);
             if (text.id === undefined) text.id = null;
             if (text.standalone === undefined) text.standalone = false;
+            if (text.parentShape === undefined) text.parentShape = null;
         }
 
         return scene;
@@ -193,6 +197,8 @@ const SceneModel = {
     validate(scene) {
         const problems = [];
         const num = (v) => typeof v === 'number' && isFinite(v);
+        const shapeIndex = (v) => v === null ||
+            (Number.isInteger(v) && v >= 0 && v < scene.shapes.length);
 
         if (!scene || typeof scene !== 'object') return ['scene is not an object'];
 
@@ -225,6 +231,11 @@ const SceneModel = {
                 if (!num(shape[key])) problems.push(`${where}.${key} is not a number`);
             }
             if (typeof shape.isContainer !== 'boolean') problems.push(`${where}.isContainer is not a boolean`);
+            if (!shapeIndex(shape.parentShape)) {
+                problems.push(`${where}.parentShape is not null or a valid shape index`);
+            } else if (shape.parentShape === i) {
+                problems.push(`${where}.parentShape points at itself`);
+            }
             if (!Array.isArray(shape.textRuns)) problems.push(`${where}.textRuns is not an array`);
             if (shape.text !== null && typeof shape.text !== 'string') problems.push(`${where}.text is neither string nor null`);
             checkStyle(shape.style, where);
@@ -244,8 +255,7 @@ const SceneModel = {
                 if (typeof conn[key] !== 'boolean') problems.push(`${where}.${key} is not a boolean`);
             }
             for (const key of ['fromShape', 'toShape']) {
-                const v = conn[key];
-                if (v !== null && !(Number.isInteger(v) && v >= 0 && v < scene.shapes.length)) {
+                if (!shapeIndex(conn[key])) {
                     problems.push(`${where}.${key} is not null or a valid shape index`);
                 }
             }
@@ -257,7 +267,23 @@ const SceneModel = {
             if (!num(text.x) || !num(text.y)) problems.push(`${where} has no numeric position`);
             if (typeof text.text !== 'string') problems.push(`${where}.text is not a string`);
             if (typeof text.standalone !== 'boolean') problems.push(`${where}.standalone is not a boolean`);
+            if (!shapeIndex(text.parentShape)) {
+                problems.push(`${where}.parentShape is not null or a valid shape index`);
+            }
             checkStyle(text.style, where);
+        });
+
+        // A parent chain that loops would make the builder recurse forever.
+        // Nesting only ever points at a strictly larger frame, so a cycle
+        // means a heuristic went wrong rather than a drawing being odd.
+        scene.shapes.forEach((shape, i) => {
+            const seen = new Set([i]);
+            let p = shape.parentShape;
+            while (Number.isInteger(p) && p >= 0 && p < scene.shapes.length) {
+                if (seen.has(p)) { problems.push(`shapes[${i}].parentShape chain is a cycle`); break; }
+                seen.add(p);
+                p = scene.shapes[p].parentShape;
+            }
         });
 
         return problems;

@@ -434,6 +434,95 @@ assert(cellV(labelled, 'Rounding') > 0 &&
     editableDoc.querySelector('Row[T="ArcTo"]') === null,
     'a rounded rect rounds via the Rounding cell, keeping a resizable outline');
 
+// Test 16: frames hold their contents, connectors hold on to their shapes
+console.log('\n--- Test 16: Groups and 1-D connectors ---');
+const nestSvg = '<svg viewBox="0 0 400 300">' +
+    '<rect x="10" y="10" width="200" height="200" fill="none" stroke="#000"/>' +
+    '<rect x="30" y="40" width="60" height="30" fill="#fff" stroke="#000"/>' +
+    '<text x="20" y="25">Frame title</text>' +
+    '<rect x="300" y="10" width="50" height="50" fill="#fff" stroke="#000"/>' +
+    '<path d="M90 55 L300 55 L300 35" stroke="#000" fill="none"/></svg>';
+const nestScene = new SvgParser(nestSvg).parse();
+const nestXml = new VsdxBuilder(nestScene)._page1();
+const nestDoc = domParser.parseFromString(nestXml, 'application/xml');
+
+const own = (el, tag, name) => Array.from(el.children).find(
+    c => c.nodeName === tag && c.getAttribute('N') === name) || null;
+const kidsOf = (el, tag) => (el ? Array.from(el.children).filter(c => c.nodeName === tag) : []);
+const cellNum = (el, name) => {
+    const c = own(el, 'Cell', name);
+    return c ? parseFloat(c.getAttribute('V')) : null;
+};
+const formulaOf = (el, name) => {
+    const c = own(el, 'Cell', name);
+    return c ? String(c.getAttribute('F')) : '';
+};
+// A shape's own box, in absolute page inches, from the origin of its group
+const boxOf = (el, ox, oy) => ({
+    left: ox + cellNum(el, 'PinX') - cellNum(el, 'LocPinX'),
+    bottom: oy + cellNum(el, 'PinY') - cellNum(el, 'LocPinY')
+});
+const IN = 1 / 96;
+const nestPageH = 300 * IN;
+const roots = kidsOf(kidsOf(nestDoc.documentElement, 'Shapes')[0], 'Shape');
+
+const nestFrame = roots.find(s => s.getAttribute('Type') === 'Group');
+assert(nestFrame !== undefined, 'a frame with contents becomes a group, so dragging it takes them along');
+const framed = kidsOf(kidsOf(nestFrame, 'Shapes')[0], 'Shape');
+assert(framed.length === 2, `the frame holds both its box and its title (got ${framed.length})`);
+assert(own(nestFrame, 'Section', 'User') !== null, 'the group declares itself a Visio container');
+
+// Nesting is only useful if it does not move anything: a child's coordinates
+// are relative to its group, so an error here shifts a whole frame's worth.
+const frameBox = boxOf(nestFrame, 0, 0);
+const tile = framed.find(s => cellNum(s, 'FillPattern') === 1);
+const nestTitle = framed.find(s => cellNum(s, 'FillPattern') === 0);
+const tileBox = boxOf(tile, frameBox.left, frameBox.bottom);
+assert(Math.abs(tileBox.left - 30 * IN) < 1e-9 &&
+       Math.abs(tileBox.bottom - (nestPageH - 70 * IN)) < 1e-9,
+    `a nested box still lands where the SVG put it (got ${tileBox.left}/${tileBox.bottom})`);
+assert(Math.abs(boxOf(nestTitle, frameBox.left, frameBox.bottom).left - 20 * IN) < 1e-9,
+    'a frame title is nested too, instead of being left behind on the page');
+
+const lone = roots.find(s => s.getAttribute('Type') === 'Shape' &&
+    own(s, 'Cell', 'OneD') === null && cellNum(s, 'FillPattern') === 1);
+assert(lone !== undefined && kidsOf(lone, 'Shapes').length === 0,
+    'a box with nothing inside stays an ordinary shape rather than a group of one');
+
+// Visio only honours the glue in <Connects> for a 1-D shape. Without OneD the
+// arrows sat unattached and stayed behind when a box moved.
+const connector = roots.find(s => own(s, 'Cell', 'OneD') !== null);
+assert(connector !== undefined && cellNum(connector, 'OneD') === 1,
+    'a connector is a 1-D shape, which is what makes its glue real');
+assert(/BeginX/.test(formulaOf(connector, 'PinX')) &&
+       /SQRT/.test(formulaOf(connector, 'Width')) &&
+       /ATAN2/.test(formulaOf(connector, 'Angle')),
+    'the connector XForm follows its endpoints, so re-gluing re-aims the route');
+assert(Math.abs(cellNum(connector, 'BeginX') - 90 * IN) < 1e-9 &&
+       Math.abs(cellNum(connector, 'BeginY') - (nestPageH - 55 * IN)) < 1e-9,
+    'the begin point keeps the coordinate the SVG gave it');
+assert(kidsOf(own(connector, 'Section', 'Geometry'), 'Row').length === 3,
+    'the elbow survives the move into the 1-D frame instead of collapsing');
+
+const nestConnects = Array.from(nestDoc.querySelectorAll('Connect'));
+assert(nestConnects.some(c => c.getAttribute('ToSheet') === tile.getAttribute('ID')) ||
+       nestConnects.some(c => c.getAttribute('FromSheet') === connector.getAttribute('ID') &&
+                              c.getAttribute('ToSheet') === tile.getAttribute('ID')),
+    'glue reaches a shape nested inside a group');
+
+// A rotated frame would turn its contents with it, and their coordinates are
+// axis-aligned, so it must not adopt them.
+const rotScene = new SvgParser('<svg viewBox="0 0 200 200">' +
+    '<g transform="rotate(10,100,100)"><rect x="10" y="10" width="150" height="150" fill="none" stroke="#000"/></g>' +
+    '<rect x="40" y="40" width="30" height="30" fill="#fff" stroke="#000"/></svg>').parse();
+assert(rotScene.shapes.some(s => s.isContainer) &&
+       rotScene.shapes.every(s => s.parentShape === null),
+    'a rotated frame is still a frame but adopts nothing');
+
+// Building twice must not renumber anything, or <Connects> would drift
+const twice = new VsdxBuilder(nestScene);
+assert(twice._page1() === twice._page1(), 'building the page twice gives the same IDs');
+
 // Full package, built the same way the browser builds it
 (async () => {
     try {
