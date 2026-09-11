@@ -2792,15 +2792,18 @@ class VsdxBuilder {
      * follows the paragraph alignment so the overflow grows away from the edge
      * the text is anchored to rather than back across it.
      *
-     * Plain values, not Width formulas. TxtWidth=Width made the edit field
-     * the whole tile and snapped it back when the user dragged the text out.
+     * When lockToShape is set, TxtWidth/TxtHeight follow the box so shrinking
+     * the field wraps the label. Values-only TxtWidth kept overflow on one
+     * line (matching the SVG) but left the text the original size when the
+     * user pulled the handles in.
      *
      * @param {{text: string, style: any}[]} runs
      * @param {number} w shape width in inches
      * @param {number} h shape height in inches
      * @param {number} [vertAlign] 0 top, 1 middle, 2 bottom
+     * @param {boolean} [lockToShape]
      */
-    _textBlockCells(runs, w, h, vertAlign) {
+    _textBlockCells(runs, w, h, vertAlign, lockToShape) {
         const margin = this.textMargin;
         let needW = 0;
         let needH = 2 * margin;
@@ -2828,19 +2831,42 @@ class VsdxBuilder {
         const txtH = Math.max(needH, 2 * margin + 0.1);
         const pin = overflowAlign === 1 ? 0.5 : (overflowAlign === 2 ? 1 : 0);
         const txtPinY = va === 0 ? h - txtH / 2 : h / 2;
+        const pinF = pin === 1 ? 'Width' : (pin === 0.5 ? 'Width*0.5' : '0');
+        const locF = pin === 1 ? 'TxtWidth' : (pin === 0.5 ? 'TxtWidth*0.5' : '0');
 
-        return `      <Cell N="LeftMargin" V="${margin}"/>
-      <Cell N="RightMargin" V="${margin}"/>
-      <Cell N="TopMargin" V="${margin}"/>
-      <Cell N="BottomMargin" V="${margin}"/>
-      <Cell N="VerticalAlign" V="${va}"/>
-      <Cell N="TxtWidth" V="${txtW}"/>
+        let sizeCells;
+        if (lockToShape && va !== 0) {
+            sizeCells = `      <Cell N="TxtWidth" V="${w}" F="Width"/>
+      <Cell N="TxtHeight" V="${h}" F="Height"/>
+      <Cell N="TxtPinX" V="${w * 0.5}" F="Width*0.5"/>
+      <Cell N="TxtPinY" V="${h * 0.5}" F="Height*0.5"/>
+      <Cell N="TxtLocPinX" V="${w * 0.5}" F="TxtWidth*0.5"/>
+      <Cell N="TxtLocPinY" V="${h * 0.5}" F="TxtHeight*0.5"/>
+`;
+        } else if (lockToShape) {
+            sizeCells = `      <Cell N="TxtWidth" V="${w}" F="Width"/>
+      <Cell N="TxtHeight" V="${txtH}"/>
+      <Cell N="TxtPinX" V="${w * pin}" F="${pinF}"/>
+      <Cell N="TxtPinY" V="${txtPinY}"/>
+      <Cell N="TxtLocPinX" V="${w * pin}" F="${locF}"/>
+      <Cell N="TxtLocPinY" V="${txtH * 0.5}"/>
+`;
+        } else {
+            sizeCells = `      <Cell N="TxtWidth" V="${txtW}"/>
       <Cell N="TxtHeight" V="${txtH}"/>
       <Cell N="TxtPinX" V="${w * pin}"/>
       <Cell N="TxtPinY" V="${txtPinY}"/>
       <Cell N="TxtLocPinX" V="${txtW * pin}"/>
       <Cell N="TxtLocPinY" V="${txtH * 0.5}"/>
 `;
+        }
+
+        return `      <Cell N="LeftMargin" V="${margin}"/>
+      <Cell N="RightMargin" V="${margin}"/>
+      <Cell N="TopMargin" V="${margin}"/>
+      <Cell N="BottomMargin" V="${margin}"/>
+      <Cell N="VerticalAlign" V="${va}"/>
+${sizeCells}`;
     }
 
     /**
@@ -2928,7 +2954,7 @@ class VsdxBuilder {
       <Cell N="Angle" V="0"/>
       <Cell N="FillPattern" V="0"/>
       <Cell N="LinePattern" V="0"/>
-${this._textBlockCells([run], lineW, lineH)}      <Section N="Character">${one.charRows}
+${this._textBlockCells([run], lineW, lineH, 1, true)}      <Section N="Character">${one.charRows}
       </Section>
       <Section N="Paragraph">${one.paraRows}
       </Section>
@@ -3494,7 +3520,7 @@ ${shapesXml}
             );
             if (runs.length <= 1) {
                 const text = this._textRunsXml(runs);
-                cellsXml += this._textBlockCells(runs, w, h, shape.isContainer ? 0 : 1);
+                cellsXml += this._textBlockCells(runs, w, h, shape.isContainer ? 0 : 1, true);
                 sectionsXml += `
       <Section N="Character">${text.charRows}
       </Section>
@@ -3711,7 +3737,7 @@ ${cellsXml}${sectionsXml}${textXml}
       <Cell N="Angle" V="0"/>
       <Cell N="FillPattern" V="0"/>
       <Cell N="LinePattern" V="0"/>
-${this._textBlockCells(runs, estWidth, estHeight)}      <Section N="Character">${textXml.charRows}
+${this._textBlockCells(runs, estWidth, estHeight, 1, true)}      <Section N="Character">${textXml.charRows}
       </Section>
       <Section N="Paragraph">${textXml.paraRows}
       </Section>
@@ -3995,7 +4021,7 @@ class DrawioBuilder {
      */
     _shapeStyle(shape) {
         const st = shape.style || {};
-        const parts = ['html=1', 'whiteSpace=wrap', 'overflow=hidden'];
+        const parts = ['html=1', 'whiteSpace=wrap', 'overflow=width'];
         if (shape.isContainer) {
             parts.push('container=1', 'collapsible=0', 'recursiveResize=0', 'expand=0');
         }
@@ -4069,8 +4095,8 @@ class DrawioBuilder {
         if (anchor === 'middle') x -= width / 2;
         else if (anchor === 'end') x -= width;
         const align = anchor === 'middle' ? 'center' : anchor === 'end' ? 'right' : 'left';
-        const parts = ['text', 'html=1', 'strokeColor=none', 'fillColor=none',
-            'overflow=visible', 'verticalAlign=bottom'];
+        const parts = ['text', 'html=1', 'whiteSpace=wrap', 'strokeColor=none',
+            'fillColor=none', 'overflow=width', 'verticalAlign=bottom'];
         this._font(parts, st, align, 'bottom');
         cells.push(
             `<mxCell id="${id}" parent="${parentId}" vertex="1" value="${this._html(raw)}" style="${parts.join(';')};">` +
@@ -4450,7 +4476,8 @@ ${body}
             arrowEnd: false,
             line: false,
             align: shape.isContainer ? 'left' : 'center',
-            valign: shape.isContainer ? 'top' : 'middle'
+            valign: shape.isContainer ? 'top' : 'middle',
+            fitText: !shape.isContainer
         });
         const x = this._cm(shape.x - this.vb.x);
         const y = this._cm(shape.y - this.vb.y);
@@ -4511,7 +4538,7 @@ ${body}
         const style = this._graphic({
             fill: 'none', stroke: 'none', fillOpacity: 0, strokeOpacity: 0,
             strokeWidth: 0, opacity: 1, strokeDasharray: null
-        }, { arrowStart: false, arrowEnd: false, line: false, align: 'left', valign: 'top' });
+        }, { arrowStart: false, arrowEnd: false, line: false, align: 'left', valign: 'top', fitText: true });
         const para = this._para(st, anchor);
         const paras = lines.map(l => `<text:p text:style-name="${para}">${this._esc(l)}</text:p>`).join('');
         const id = `id_t${i}`;
@@ -4582,7 +4609,7 @@ ${body}
 
     /**
      * @param {any} st
-     * @param {{arrowStart: boolean, arrowEnd: boolean, line: boolean, align?: string, valign?: string}} opt
+     * @param {{arrowStart: boolean, arrowEnd: boolean, line: boolean, align?: string, valign?: string, fitText?: boolean}} opt
      * @returns {string}
      */
     _graphic(st, opt) {
@@ -4594,7 +4621,8 @@ ${body}
         const dash = !!(st && st.strokeDasharray);
         const align = opt.align || 'center';
         const valign = opt.valign || 'middle';
-        const key = [fill, stroke, sw, fo, so, dash, opt.arrowStart, opt.arrowEnd, opt.line, align, valign].join('|');
+        const fitText = !!opt.fitText;
+        const key = [fill, stroke, sw, fo, so, dash, opt.arrowStart, opt.arrowEnd, opt.line, align, valign, fitText].join('|');
         if (this.styleCache.has(key)) return /** @type {string} */ (this.styleCache.get(key));
         const name = 'gr' + (++this.styleSeq);
         if (dash) this.needDash = true;
@@ -4609,9 +4637,10 @@ ${body}
         const mw = this._cm(6);
         const startM = opt.arrowStart ? ` draw:marker-start="Arrow" draw:marker-start-width="${mw}cm"` : '';
         const endM = opt.arrowEnd ? ` draw:marker-end="Arrow" draw:marker-end-width="${mw}cm"` : '';
+        const fit = fitText ? ' draw:fit-to-size="true" style:shrink-to-fit="true"' : '';
         this.autoStyles.push(
             `<style:style style:name="${name}" style:family="graphic" style:parent-style-name="standard">` +
-            `<style:graphic-properties ${fillAttr} ${strokeAttr}${dashAttr}${startM}${endM} draw:textarea-horizontal-align="${align}" draw:textarea-vertical-align="${valign}" fo:padding-top="0.04cm" fo:padding-bottom="0.04cm" fo:padding-left="0.06cm" fo:padding-right="0.06cm"/>` +
+            `<style:graphic-properties ${fillAttr} ${strokeAttr}${dashAttr}${startM}${endM} draw:textarea-horizontal-align="${align}" draw:textarea-vertical-align="${valign}" draw:auto-grow-width="false" draw:auto-grow-height="false"${fit} fo:padding-top="0.04cm" fo:padding-bottom="0.04cm" fo:padding-left="0.06cm" fo:padding-right="0.06cm"/>` +
             `</style:style>`
         );
         this.styleCache.set(key, name);

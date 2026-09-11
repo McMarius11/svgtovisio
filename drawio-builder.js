@@ -123,7 +123,7 @@ class DrawioBuilder {
      */
     _shapeStyle(shape) {
         const st = shape.style || {};
-        const parts = ['html=1', 'whiteSpace=wrap', 'overflow=hidden'];
+        const parts = ['html=1', 'whiteSpace=wrap', 'overflow=width'];
         if (shape.isContainer) {
             parts.push('container=1', 'collapsible=0', 'recursiveResize=0', 'expand=0');
         }
@@ -197,8 +197,8 @@ class DrawioBuilder {
         if (anchor === 'middle') x -= width / 2;
         else if (anchor === 'end') x -= width;
         const align = anchor === 'middle' ? 'center' : anchor === 'end' ? 'right' : 'left';
-        const parts = ['text', 'html=1', 'strokeColor=none', 'fillColor=none',
-            'overflow=visible', 'verticalAlign=bottom'];
+        const parts = ['text', 'html=1', 'whiteSpace=wrap', 'strokeColor=none',
+            'fillColor=none', 'overflow=width', 'verticalAlign=bottom'];
         this._font(parts, st, align, 'bottom');
         cells.push(
             `<mxCell id="${id}" parent="${parentId}" vertex="1" value="${this._html(raw)}" style="${parts.join(';')};">` +

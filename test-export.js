@@ -74,6 +74,7 @@ function checkDrawio(xml, scene, file) {
     const poly = scene.connectors.filter(c => (c.points || []).length > 2).length;
     assert(withWaypoints === poly,
         `${file} draw.io keeps polyline waypoints (${withWaypoints}/${poly})`);
+    assert(/whiteSpace=wrap/.test(xml), `${file} draw.io wraps text when the box shrinks`);
 }
 
 function checkOdg(xml, scene, file) {
@@ -105,6 +106,10 @@ function checkOdg(xml, scene, file) {
     const groups = scene.shapes.filter(s => s.isContainer).length;
     const gs = (xml.match(/<draw:g>/g) || []).length;
     assert(gs === groups, `${file} fodg groups match frames (${gs}/${groups})`);
+    if (scene.shapes.some(s => !s.isContainer && s.text)) {
+        assert(/draw:fit-to-size="true"/.test(xml),
+            `${file} fodg shrinks tile text when the box shrinks`);
+    }
 }
 
 (function main() {

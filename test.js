@@ -468,8 +468,8 @@ const labelled = Array.from(editableDoc.querySelectorAll('Shape')).find(s => {
 });
 assert(labelled && Math.abs(cellV(labelled, 'LeftMargin') - 4 / 96) < 1e-9,
     'text margins are in drawing units, not Visio\'s unscaled 4pt default');
-assert(cellF(labelled, 'TxtWidth') === 'null' && cellF(labelled, 'TxtHeight') === 'null',
-    'the text block is a value, so dragging it out does not snap back to the tile');
+assert(cellF(labelled, 'TxtWidth') === 'Width' && cellF(labelled, 'TxtHeight') === 'Height',
+    'the text block follows the tile, so shrinking the box wraps the label');
 // Rounding alone would be shorter, but only Visio acts on it: libvisio,
 // which every Linux viewer uses, draws such a shape square. So the corners
 // are real arcs - and they still have to scale, which the frozen-cell check

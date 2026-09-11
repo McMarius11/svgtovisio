@@ -71,8 +71,9 @@ function checkPage(pageXml, file) {
     assert(flat.length === 0,
         `${file} no 1-D connector is flat (Height 0)`);
 
-    assert(!/<Cell N="TxtWidth"[^>]*F=/.test(pageXml),
-        `${file} TxtWidth is a value, so the text field can be dragged free`);
+    const locked = (pageXml.match(/<Cell N="TxtWidth"[^>]*F="Width"\/>/g) || []).length;
+    assert(locked > 0 || !/<Cell N="TxtWidth"/.test(pageXml),
+        `${file} TxtWidth follows Width so shrinking a field wraps the text (${locked})`);
 }
 
 (async () => {

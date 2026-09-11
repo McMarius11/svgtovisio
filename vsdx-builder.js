@@ -316,15 +316,18 @@ class VsdxBuilder {
      * follows the paragraph alignment so the overflow grows away from the edge
      * the text is anchored to rather than back across it.
      *
-     * Plain values, not Width formulas. TxtWidth=Width made the edit field
-     * the whole tile and snapped it back when the user dragged the text out.
+     * When lockToShape is set, TxtWidth/TxtHeight follow the box so shrinking
+     * the field wraps the label. Values-only TxtWidth kept overflow on one
+     * line (matching the SVG) but left the text the original size when the
+     * user pulled the handles in.
      *
      * @param {{text: string, style: any}[]} runs
      * @param {number} w shape width in inches
      * @param {number} h shape height in inches
      * @param {number} [vertAlign] 0 top, 1 middle, 2 bottom
+     * @param {boolean} [lockToShape]
      */
-    _textBlockCells(runs, w, h, vertAlign) {
+    _textBlockCells(runs, w, h, vertAlign, lockToShape) {
         const margin = this.textMargin;
         let needW = 0;
         let needH = 2 * margin;
@@ -352,19 +355,42 @@ class VsdxBuilder {
         const txtH = Math.max(needH, 2 * margin + 0.1);
         const pin = overflowAlign === 1 ? 0.5 : (overflowAlign === 2 ? 1 : 0);
         const txtPinY = va === 0 ? h - txtH / 2 : h / 2;
+        const pinF = pin === 1 ? 'Width' : (pin === 0.5 ? 'Width*0.5' : '0');
+        const locF = pin === 1 ? 'TxtWidth' : (pin === 0.5 ? 'TxtWidth*0.5' : '0');
 
-        return `      <Cell N="LeftMargin" V="${margin}"/>
-      <Cell N="RightMargin" V="${margin}"/>
-      <Cell N="TopMargin" V="${margin}"/>
-      <Cell N="BottomMargin" V="${margin}"/>
-      <Cell N="VerticalAlign" V="${va}"/>
-      <Cell N="TxtWidth" V="${txtW}"/>
+        let sizeCells;
+        if (lockToShape && va !== 0) {
+            sizeCells = `      <Cell N="TxtWidth" V="${w}" F="Width"/>
+      <Cell N="TxtHeight" V="${h}" F="Height"/>
+      <Cell N="TxtPinX" V="${w * 0.5}" F="Width*0.5"/>
+      <Cell N="TxtPinY" V="${h * 0.5}" F="Height*0.5"/>
+      <Cell N="TxtLocPinX" V="${w * 0.5}" F="TxtWidth*0.5"/>
+      <Cell N="TxtLocPinY" V="${h * 0.5}" F="TxtHeight*0.5"/>
+`;
+        } else if (lockToShape) {
+            sizeCells = `      <Cell N="TxtWidth" V="${w}" F="Width"/>
+      <Cell N="TxtHeight" V="${txtH}"/>
+      <Cell N="TxtPinX" V="${w * pin}" F="${pinF}"/>
+      <Cell N="TxtPinY" V="${txtPinY}"/>
+      <Cell N="TxtLocPinX" V="${w * pin}" F="${locF}"/>
+      <Cell N="TxtLocPinY" V="${txtH * 0.5}"/>
+`;
+        } else {
+            sizeCells = `      <Cell N="TxtWidth" V="${txtW}"/>
       <Cell N="TxtHeight" V="${txtH}"/>
       <Cell N="TxtPinX" V="${w * pin}"/>
       <Cell N="TxtPinY" V="${txtPinY}"/>
       <Cell N="TxtLocPinX" V="${txtW * pin}"/>
       <Cell N="TxtLocPinY" V="${txtH * 0.5}"/>
 `;
+        }
+
+        return `      <Cell N="LeftMargin" V="${margin}"/>
+      <Cell N="RightMargin" V="${margin}"/>
+      <Cell N="TopMargin" V="${margin}"/>
+      <Cell N="BottomMargin" V="${margin}"/>
+      <Cell N="VerticalAlign" V="${va}"/>
+${sizeCells}`;
     }
 
     /**
@@ -452,7 +478,7 @@ class VsdxBuilder {
       <Cell N="Angle" V="0"/>
       <Cell N="FillPattern" V="0"/>
       <Cell N="LinePattern" V="0"/>
-${this._textBlockCells([run], lineW, lineH)}      <Section N="Character">${one.charRows}
+${this._textBlockCells([run], lineW, lineH, 1, true)}      <Section N="Character">${one.charRows}
       </Section>
       <Section N="Paragraph">${one.paraRows}
       </Section>
@@ -1018,7 +1044,7 @@ ${shapesXml}
             );
             if (runs.length <= 1) {
                 const text = this._textRunsXml(runs);
-                cellsXml += this._textBlockCells(runs, w, h, shape.isContainer ? 0 : 1);
+                cellsXml += this._textBlockCells(runs, w, h, shape.isContainer ? 0 : 1, true);
                 sectionsXml += `
       <Section N="Character">${text.charRows}
       </Section>
@@ -1235,7 +1261,7 @@ ${cellsXml}${sectionsXml}${textXml}
       <Cell N="Angle" V="0"/>
       <Cell N="FillPattern" V="0"/>
       <Cell N="LinePattern" V="0"/>
-${this._textBlockCells(runs, estWidth, estHeight)}      <Section N="Character">${textXml.charRows}
+${this._textBlockCells(runs, estWidth, estHeight, 1, true)}      <Section N="Character">${textXml.charRows}
       </Section>
       <Section N="Paragraph">${textXml.paraRows}
       </Section>

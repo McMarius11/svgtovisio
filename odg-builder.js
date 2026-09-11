@@ -173,7 +173,8 @@ ${body}
             arrowEnd: false,
             line: false,
             align: shape.isContainer ? 'left' : 'center',
-            valign: shape.isContainer ? 'top' : 'middle'
+            valign: shape.isContainer ? 'top' : 'middle',
+            fitText: !shape.isContainer
         });
         const x = this._cm(shape.x - this.vb.x);
         const y = this._cm(shape.y - this.vb.y);
@@ -234,7 +235,7 @@ ${body}
         const style = this._graphic({
             fill: 'none', stroke: 'none', fillOpacity: 0, strokeOpacity: 0,
             strokeWidth: 0, opacity: 1, strokeDasharray: null
-        }, { arrowStart: false, arrowEnd: false, line: false, align: 'left', valign: 'top' });
+        }, { arrowStart: false, arrowEnd: false, line: false, align: 'left', valign: 'top', fitText: true });
         const para = this._para(st, anchor);
         const paras = lines.map(l => `<text:p text:style-name="${para}">${this._esc(l)}</text:p>`).join('');
         const id = `id_t${i}`;
@@ -305,7 +306,7 @@ ${body}
 
     /**
      * @param {any} st
-     * @param {{arrowStart: boolean, arrowEnd: boolean, line: boolean, align?: string, valign?: string}} opt
+     * @param {{arrowStart: boolean, arrowEnd: boolean, line: boolean, align?: string, valign?: string, fitText?: boolean}} opt
      * @returns {string}
      */
     _graphic(st, opt) {
@@ -317,7 +318,8 @@ ${body}
         const dash = !!(st && st.strokeDasharray);
         const align = opt.align || 'center';
         const valign = opt.valign || 'middle';
-        const key = [fill, stroke, sw, fo, so, dash, opt.arrowStart, opt.arrowEnd, opt.line, align, valign].join('|');
+        const fitText = !!opt.fitText;
+        const key = [fill, stroke, sw, fo, so, dash, opt.arrowStart, opt.arrowEnd, opt.line, align, valign, fitText].join('|');
         if (this.styleCache.has(key)) return /** @type {string} */ (this.styleCache.get(key));
         const name = 'gr' + (++this.styleSeq);
         if (dash) this.needDash = true;
@@ -332,9 +334,10 @@ ${body}
         const mw = this._cm(6);
         const startM = opt.arrowStart ? ` draw:marker-start="Arrow" draw:marker-start-width="${mw}cm"` : '';
         const endM = opt.arrowEnd ? ` draw:marker-end="Arrow" draw:marker-end-width="${mw}cm"` : '';
+        const fit = fitText ? ' draw:fit-to-size="true" style:shrink-to-fit="true"' : '';
         this.autoStyles.push(
             `<style:style style:name="${name}" style:family="graphic" style:parent-style-name="standard">` +
-            `<style:graphic-properties ${fillAttr} ${strokeAttr}${dashAttr}${startM}${endM} draw:textarea-horizontal-align="${align}" draw:textarea-vertical-align="${valign}" fo:padding-top="0.04cm" fo:padding-bottom="0.04cm" fo:padding-left="0.06cm" fo:padding-right="0.06cm"/>` +
+            `<style:graphic-properties ${fillAttr} ${strokeAttr}${dashAttr}${startM}${endM} draw:textarea-horizontal-align="${align}" draw:textarea-vertical-align="${valign}" draw:auto-grow-width="false" draw:auto-grow-height="false"${fit} fo:padding-top="0.04cm" fo:padding-bottom="0.04cm" fo:padding-left="0.06cm" fo:padding-right="0.06cm"/>` +
             `</style:style>`
         );
         this.styleCache.set(key, name);
